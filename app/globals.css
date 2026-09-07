@@ -20,6 +20,8 @@
   --space-8: 32px;
   --section-gap: var(--space-4);
   --card-padding: var(--space-6);
+  --sidebar-width: clamp(244px, 11.25vw, 288px);
+  --content-max-width: clamp(1500px, 82vw, 2400px);
 }
 
 * {
@@ -58,7 +60,7 @@ button {
   display: flex;
 }
 .sidebar {
-  width: 244px;
+  width: var(--sidebar-width);
   height: 100vh;
   position: fixed;
   inset: 0 auto 0 0;
@@ -211,8 +213,8 @@ nav button b {
   margin: 0;
 }
 main {
-  width: calc(100% - 244px);
-  margin-left: 244px;
+  width: calc(100% - var(--sidebar-width));
+  margin-left: var(--sidebar-width);
   min-width: 0;
 }
 .topbar {
@@ -288,9 +290,10 @@ main {
   display: none;
 }
 .content {
-  max-width: 1500px;
+  width: 100%;
+  max-width: var(--content-max-width);
   margin: 0 auto;
-  padding: 48px clamp(24px, 4vw, 56px) 32px;
+  padding: clamp(40px, 3vw, 64px) clamp(24px, 3vw, 72px) 32px;
 }
 .page-heading {
   display: flex;
@@ -2162,6 +2165,98 @@ footer {
 footer .brand-mark {
   transform: scale(0.48);
   margin-right: -8px;
+}
+
+@media (min-width: 1800px) {
+  :root {
+    --section-gap: var(--space-5);
+    --card-padding: 28px;
+  }
+  .sidebar {
+    padding-inline: 22px;
+  }
+  nav button {
+    min-height: 44px;
+  }
+  nav button span {
+    font-size: 14px;
+  }
+  .topbar {
+    height: 76px;
+    padding-inline: clamp(40px, 3vw, 76px);
+  }
+  .connection,
+  .top-actions select {
+    font-size: 13px;
+  }
+  .page-heading p {
+    max-width: 760px;
+    font-size: 15px;
+  }
+  .eyebrow,
+  .card-heading span,
+  .setting-panel > span,
+  .worth-breakdown > span,
+  .fire-hero > div > span {
+    font-size: 11px;
+  }
+  .primary,
+  .secondary {
+    min-height: 44px;
+    font-size: 13px;
+  }
+  .metric {
+    min-height: 156px;
+    padding: 22px;
+  }
+  .metric-top > span {
+    font-size: 12px;
+  }
+  .metric > strong {
+    font-size: 32px;
+  }
+  .metric > small,
+  .text-button,
+  .badge,
+  .target-chip {
+    font-size: 12px;
+  }
+  .card-heading h2 {
+    font-size: 25px;
+  }
+  th {
+    font-size: 11px;
+  }
+  td,
+  .merchant-cell strong,
+  .amount,
+  .rec-row span,
+  .rec-row .strong {
+    font-size: 13px;
+  }
+  .merchant-cell small,
+  .pill,
+  .rec-row.header span {
+    font-size: 11px;
+  }
+  .onboarding {
+    min-height: clamp(390px, 23vw, 500px);
+  }
+  .onboarding-hero p {
+    max-width: 760px;
+    font-size: 14px;
+  }
+  .onboarding-proof > p,
+  .onboarding-proof > div,
+  .onboarding-steps p {
+    font-size: 12px;
+  }
+  .onboarding-steps strong {
+    font-size: 14px;
+  }
+  .onboarding-steps .card {
+    padding: 24px;
+  }
 }
 
 @media (max-width: 1200px) {
