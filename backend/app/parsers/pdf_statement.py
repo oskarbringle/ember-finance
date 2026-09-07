@@ -10,9 +10,16 @@ import pdfplumber
 from .base import ParsedTransaction, TransactionParser
 
 
-AMOUNT_PATTERN = r"(?:\$\s*)?\(?-?\d[\d,]*\.\d{2}\)?"
-SHORT_DATE_PATTERN = r"\d{1,2}/\d{1,2}"
-FULL_DATE_PATTERN = r"\d{1,2}/\d{1,2}/(?:\d{4}|\d{2})"
+AMOUNT_PATTERN = r"(?:[+\-−]\s*)?\(?\s*(?:[$€£]\s*)?[+\-−]?\s*\d[\d,]*\.\d{2}\)?(?:\s*(?:CR|DR))?"
+SHORT_DATE_PATTERN = r"\d{1,2}[/-]\d{1,2}"
+FULL_DATE_PATTERN = r"\d{1,2}[/-]\d{1,2}[/-](?:\d{4}|\d{2})"
+ISO_DATE_PATTERN = r"\d{4}-\d{1,2}-\d{1,2}"
+NAMED_DATE_PATTERN = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+    r"Dec(?:ember)?)\s+\d{1,2}(?:,?\s+\d{4})?"
+)
+DATE_PATTERN = rf"(?:{ISO_DATE_PATTERN}|{FULL_DATE_PATTERN}|{SHORT_DATE_PATTERN}|{NAMED_DATE_PATTERN})"
 SKIP_DESCRIPTIONS = re.compile(
     r"^(?:TOTAL|BEGINNING BALANCE|ENDING BALANCE|DATE DESCRIPTION|TRANSACTION DATE|PAGE \d+|ACCOUNT SUMMARY)",
     re.IGNORECASE,
@@ -23,8 +30,8 @@ class PdfStatementParser(TransactionParser):
     """Local, deterministic parser for text-based consumer bank statements.
 
     Chase checking/savings and Chase card layouts receive provider-specific sign
-    handling. Other searchable PDFs use the conservative generic line parser and
-    are marked for careful review in the import report.
+    handling. Other searchable PDFs use flexible table and text-row extraction
+    and are marked for careful review in the import report.
     """
 
     provider = "generic_pdf"
@@ -58,8 +65,9 @@ class PdfStatementParser(TransactionParser):
         parsed = self._unique(parsed)
         if not parsed:
             raise ValueError(
-                "No transaction rows were detected. The PDF is searchable, but its layout is not recognized yet. "
-                "Use the CSV export if available or provide a redacted sample so this layout can be added."
+                "Ember could read this PDF, but could not identify transaction rows reliably enough to preview. "
+                "Nothing was imported. Check that this is the full statement rather than a summary, or use the "
+                "bank's transaction CSV export for this statement."
             )
 
         warnings: list[str] = []
@@ -118,27 +126,60 @@ class PdfStatementParser(TransactionParser):
 
     @staticmethod
     def _date(value: str, statement_end: date | None) -> date:
-        value = value.strip()
-        for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        value = re.sub(r"\s+", " ", value.strip().replace(",", ""))
+        if not re.fullmatch(ISO_DATE_PATTERN, value):
+            value = value.replace("-", "/")
+        for fmt in (
+            "%Y-%m-%d",
+            "%m/%d/%Y",
+            "%m/%d/%y",
+            "%B %d %Y",
+            "%b %d %Y",
+        ):
             try:
                 return datetime.strptime(value, fmt).date()
             except ValueError:
                 pass
-        month, day = (int(part) for part in value.split("/"))
         reference = statement_end or date.today()
+        for fmt in ("%B %d", "%b %d"):
+            try:
+                parsed = datetime.strptime(value, fmt)
+                year = (
+                    reference.year - 1
+                    if parsed.month > reference.month and reference.month <= 2
+                    else reference.year
+                )
+                return date(year, parsed.month, parsed.day)
+            except ValueError:
+                pass
+        month, day = (int(part) for part in value.split("/"))
         year = reference.year - 1 if month > reference.month and reference.month <= 2 else reference.year
         return date(year, month, day)
 
     @staticmethod
     def _amount(value: str) -> float:
-        clean = value.replace("$", "").replace(",", "").replace(" ", "")
-        negative = clean.startswith("-") or (clean.startswith("(") and clean.endswith(")"))
+        clean = (
+            value.replace("$", "")
+            .replace("€", "")
+            .replace("£", "")
+            .replace(",", "")
+            .replace(" ", "")
+            .replace("−", "-")
+        )
+        suffix = clean[-2:].upper() if len(clean) >= 2 else ""
+        if suffix in {"CR", "DR"}:
+            clean = clean[:-2]
+        negative = clean.startswith("-") or (clean.startswith("(") and clean.endswith(")")) or suffix == "DR"
         number = float(clean.strip("()-+"))
         return -number if negative else number
 
     def _signed_amount(self, raw: str, description: str, account_type: str, section: str, sign_convention: str) -> float:
         amount = self._amount(raw)
         upper = description.upper()
+        if raw.strip().upper().endswith("CR"):
+            return abs(amount)
+        if raw.strip().upper().endswith("DR"):
+            return -abs(amount)
         if sign_convention == "positive_outflow":
             return -amount
         if amount < 0:
@@ -155,7 +196,7 @@ class PdfStatementParser(TransactionParser):
             return abs(amount)
         if re.search(r"WITHDRAWAL|PURCHASE|PAYMENT|CHECK|FEE|ZELLE|VENMO|TRANSFER TO", upper):
             return -abs(amount)
-        return amount
+        return -abs(amount)
 
     def _parse_tables(self, tables: Iterable[list[list[str | None]]], account_type: str, statement_end: date | None, sign_convention: str) -> list[ParsedTransaction]:
         parsed: list[ParsedTransaction] = []
@@ -174,9 +215,24 @@ class PdfStatementParser(TransactionParser):
                 ):
                     header_map = self._header_map(row)
                     continue
-                if not header_map:
-                    continue
-                tx = self._table_transaction(row, header_map, account_type, statement_end, section, sign_convention)
+                tx = (
+                    self._table_transaction(
+                        row,
+                        header_map,
+                        account_type,
+                        statement_end,
+                        section,
+                        sign_convention,
+                    )
+                    if header_map
+                    else self._inferred_table_transaction(
+                        row,
+                        account_type,
+                        statement_end,
+                        section,
+                        sign_convention,
+                    )
+                )
                 if tx:
                     parsed.append(tx)
         return parsed
@@ -225,11 +281,100 @@ class PdfStatementParser(TransactionParser):
             amount=round(self._signed_amount(amount_raw, description, account_type, amount_section, sign_convention), 2),
         )
 
+    def _inferred_table_transaction(
+        self,
+        row: list[str],
+        account_type: str,
+        statement_end: date | None,
+        section: str,
+        sign_convention: str,
+    ) -> ParsedTransaction | None:
+        date_cells = [
+            (index, cell)
+            for index, cell in enumerate(row)
+            if re.fullmatch(DATE_PATTERN, cell, re.IGNORECASE)
+        ]
+        amount_cells = [
+            (index, cell)
+            for index, cell in enumerate(row)
+            if re.fullmatch(AMOUNT_PATTERN, cell, re.IGNORECASE)
+        ]
+        if not date_cells or not amount_cells:
+            return None
+
+        excluded = {index for index, _ in date_cells + amount_cells}
+        description_cells = [
+            cell
+            for index, cell in enumerate(row)
+            if index not in excluded and cell and not SKIP_DESCRIPTIONS.search(cell)
+        ]
+        description = " ".join(description_cells).strip()
+        if not description:
+            return None
+
+        transaction_date = self._date(date_cells[0][1], statement_end)
+        posted_date = (
+            self._date(date_cells[1][1], statement_end)
+            if len(date_cells) > 1
+            else None
+        )
+        amount_raw = amount_cells[0][1]
+        return ParsedTransaction(
+            transaction_date=transaction_date,
+            posted_date=posted_date,
+            description=description,
+            amount=round(
+                self._signed_amount(
+                    amount_raw,
+                    description,
+                    account_type,
+                    section,
+                    sign_convention,
+                ),
+                2,
+            ),
+        )
+
     def _parse_lines(self, pages: list[str], account_type: str, statement_end: date | None, sign_convention: str) -> list[ParsedTransaction]:
         parsed: list[ParsedTransaction] = []
         section = ""
-        two_dates = re.compile(rf"^\s*({FULL_DATE_PATTERN}|{SHORT_DATE_PATTERN})\s+({FULL_DATE_PATTERN}|{SHORT_DATE_PATTERN})\s+(.+?)\s+({AMOUNT_PATTERN})\s*$")
-        one_date = re.compile(rf"^\s*({FULL_DATE_PATTERN}|{SHORT_DATE_PATTERN})\s+(.+?)\s+({AMOUNT_PATTERN})(?:\s+{AMOUNT_PATTERN})?\s*$")
+        leading_dates = re.compile(
+            rf"^\s*({DATE_PATTERN})(?:\s+({DATE_PATTERN}))?\s*(.*)$",
+            re.IGNORECASE,
+        )
+        amount = re.compile(AMOUNT_PATTERN, re.IGNORECASE)
+        pending: tuple[str, str, str] | None = None
+
+        def append_transaction(
+            transaction_date: str,
+            posted_date: str,
+            description: str,
+            amount_raw: str,
+        ) -> None:
+            if not description or SKIP_DESCRIPTIONS.search(description):
+                return
+            parsed.append(
+                ParsedTransaction(
+                    transaction_date=self._date(transaction_date, statement_end),
+                    posted_date=(
+                        self._date(posted_date, statement_end)
+                        if posted_date
+                        else None
+                    ),
+                    description=description.strip(),
+                    amount=round(
+                        self._signed_amount(
+                            amount_raw,
+                            description,
+                            account_type,
+                            section,
+                            sign_convention,
+                        ),
+                        2,
+                    ),
+                )
+            )
+
         for page in pages:
             for raw_line in page.splitlines():
                 line = re.sub(r"\s+", " ", raw_line).strip()
@@ -238,23 +383,39 @@ class PdfStatementParser(TransactionParser):
                     section = "credit"
                 elif re.search(r"WITHDRAWALS?|CHECKS PAID|DEDUCTIONS?|PURCHASES", upper) and not re.match(r"^\d", line):
                     section = "debit"
-                match = two_dates.match(line)
+                match = leading_dates.match(line)
                 if match:
-                    tx_date, posted, description, amount_raw = match.groups()
-                else:
-                    match = one_date.match(line)
-                    if not match:
-                        continue
-                    tx_date, description, amount_raw = match.groups()
-                    posted = ""
-                if not description or SKIP_DESCRIPTIONS.search(description):
+                    transaction_date, posted_date, remainder = match.groups()
+                    amount_match = amount.search(remainder)
+                    if amount_match:
+                        append_transaction(
+                            transaction_date,
+                            posted_date or "",
+                            remainder[: amount_match.start()].strip(" -·|"),
+                            amount_match.group(),
+                        )
+                        pending = None
+                    else:
+                        pending = (
+                            transaction_date,
+                            posted_date or "",
+                            remainder.strip(),
+                        )
                     continue
-                parsed.append(ParsedTransaction(
-                    transaction_date=self._date(tx_date, statement_end),
-                    posted_date=self._date(posted, statement_end) if posted else None,
-                    description=description.strip(),
-                    amount=round(self._signed_amount(amount_raw, description, account_type, section, sign_convention), 2),
-                ))
+                if pending and line:
+                    transaction_date, posted_date, description = pending
+                    combined = f"{description} {line}".strip()
+                    amount_match = amount.search(combined)
+                    if amount_match:
+                        append_transaction(
+                            transaction_date,
+                            posted_date,
+                            combined[: amount_match.start()].strip(" -·|"),
+                            amount_match.group(),
+                        )
+                        pending = None
+                    elif len(combined) <= 300:
+                        pending = (transaction_date, posted_date, combined)
         return parsed
 
     @staticmethod

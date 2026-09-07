@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import uuid
+from contextlib import asynccontextmanager
 from datetime import date
 from pathlib import Path
 
@@ -24,18 +25,8 @@ from .sample_data import initialize_reference_data
 from .schemas import AccountCreate, AccountRead, BudgetUpsert, RuleCreate, SnapshotCreate, TransactionRead, TransactionUpdate
 
 
-app = FastAPI(title="Ember Finance API", version="1.0.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-@app.on_event("startup")
-def startup() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
     with Session(engine) as db:
         initialize_reference_data(db)
@@ -53,6 +44,17 @@ def startup() -> None:
             if original:
                 refund.category = original.category
         db.commit()
+    yield
+
+
+app = FastAPI(title="Ember Finance API", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/api/health")

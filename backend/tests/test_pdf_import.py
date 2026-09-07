@@ -62,6 +62,42 @@ def test_chase_bank_pdf_uses_statement_sections_for_signs():
     assert [row.amount for row in rows] == [4000, -80, -1000]
 
 
+def test_generic_pdf_supports_named_and_iso_dates_with_debit_credit_suffixes():
+    pdf = statement_pdf([
+        "Statement Date: 09/30/2026",
+        "Sep 01 ACME MARKET 42.18 DR",
+        "2026-09-02 EMPLOYER PAYROLL 2,500.00 CR",
+    ])
+    rows = PdfStatementParser().parse(pdf, account_type="CHECKING")
+    assert [row.transaction_date.isoformat() for row in rows] == [
+        "2026-09-01",
+        "2026-09-02",
+    ]
+    assert [row.amount for row in rows] == [-42.18, 2500]
+
+
+def test_generic_pdf_combines_wrapped_transaction_rows():
+    pdf = statement_pdf([
+        "Statement Date: 09/30/2026",
+        "09/03/2026 09/04/2026 LOCAL HARDWARE STORE",
+        "DOWNTOWN LOCATION 18.75",
+    ])
+    rows = PdfStatementParser().parse(pdf, account_type="CHECKING")
+    assert len(rows) == 1
+    assert rows[0].posted_date.isoformat() == "2026-09-04"
+    assert rows[0].description == "LOCAL HARDWARE STORE DOWNTOWN LOCATION"
+    assert rows[0].amount == -18.75
+
+
+def test_generic_pdf_defaults_unsigned_non_income_rows_to_outflows():
+    pdf = statement_pdf([
+        "Statement Date: 09/30/2026",
+        "09/05 CORNER MARKET 27.40",
+    ])
+    rows = PdfStatementParser().parse(pdf, account_type="CHECKING")
+    assert rows[0].amount == -27.40
+
+
 def test_blank_scanned_pdf_gives_local_ocr_guidance():
     pdf = statement_pdf([])
     with pytest.raises(ValueError, match="scanned PDF"):

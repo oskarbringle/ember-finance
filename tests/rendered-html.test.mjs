@@ -40,6 +40,9 @@ test("source starts from zero and does not contain a demo dashboard fallback", a
     /\[transactions, setTransactions\] = useState<Transaction\[\]>\(\[\]\)/,
   );
   assert.match(page, /Start with a clean slate/);
+  assert.match(page, /const \[page, setPage\] = useState\("Home"\)/);
+  assert.match(page, /\["Home", House\]/);
+  assert.match(page, /className="account-edit-button"/);
   assert.doesNotMatch(
     page,
     /fallbackDashboard|fallbackAccounts|fallbackTransactions/,

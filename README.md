@@ -7,8 +7,9 @@ There is no login, telemetry, bank credential, cloud database, or automatic uplo
 ## What works
 
 - Clean first-run onboarding with no demo accounts, balances, transactions, or budgets
+- Guided Home setup and editable account details, balances, and active status
 - Searchable PDF import for Chase checking, savings, and credit-card statements
-- Conservative generic PDF support with explicit review warnings
+- Broad generic PDF support for numeric, ISO, and month-name dates; debit/credit suffixes; extracted tables; and wrapped rows
 - CSV import for date/description/amount or debit/credit layouts
 - Preview-before-commit, sign checks, confidence reporting, and deterministic duplicate detection
 - Expense, income, saving, investment, transfer, card-payment, refund, and reimbursement accounting
@@ -34,13 +35,13 @@ The start script creates an isolated Python environment, installs missing depend
 
 ## Your first statement
 
-1. Open **Settings** and create the account that owns the statement. Use a nickname and, optionally, only the final four digits.
+1. Start on **Home**, then open **Settings** and create the account that owns the statement. Use a nickname and, optionally, only the final four digits.
 2. Open **Import**, select that account, and choose the PDF or CSV.
 3. Inspect the parser name, warnings, dates, merchants, classifications, and signed amounts in the preview.
 4. Commit only when the extracted rows match the statement.
 5. Open **Review** and resolve uncertain person-to-person payments or unfamiliar descriptions.
 
-PDF extraction is deterministic and entirely local. Searchable Chase statements receive specialized parsing. Other searchable layouts use a cautious generic parser and are marked for review. Image-only scans are rejected with local OCR instructions rather than guessed at. A bank can change its layout, so always reconcile row count and totals against the original statement before relying on the dashboard.
+PDF extraction is deterministic and entirely local. Searchable Chase statements receive specialized parsing. Other searchable layouts use table and flexible text-row extraction and are marked for review. Image-only scans are rejected with local OCR instructions rather than guessed at. A bank can change its layout, so always reconcile row count and totals against the original statement before relying on the dashboard.
 
 If a searchable statement layout is not recognized, use the bank’s CSV export when available or contribute a fully redacted fixture and parser test. Never commit a real statement.
 

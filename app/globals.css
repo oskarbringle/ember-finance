@@ -1691,6 +1691,29 @@ tbody tr:last-child td {
   padding: 10px;
   border-radius: 6px;
 }
+.import-error {
+  margin: 12px 0;
+  padding: 15px 16px;
+  border: 1px solid #eccdca;
+  border-radius: 8px;
+  background: #fbefed;
+  color: #82463f;
+  display: grid;
+  gap: 5px;
+}
+.import-error strong {
+  font-size: 11px;
+}
+.import-error p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.import-error span {
+  color: #765f5b;
+  font-size: 9px;
+  line-height: 1.55;
+}
 .loading {
   height: 20px;
   display: flex;
@@ -1855,14 +1878,65 @@ tbody tr:last-child td {
   grid-template-columns: 31px 1fr;
   gap: 11px;
 }
+.onboarding-steps .card.complete {
+  border-color: #cddbd4;
+  background: #f6f9f6;
+}
 .onboarding-steps .card > b {
   color: var(--orange);
   font:
     500 20px Georgia,
     serif;
 }
+.onboarding-steps .card > div {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+.onboarding-steps .card > div > span {
+  color: #7c8781;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  margin-bottom: 5px;
+}
 .onboarding-steps strong {
   font-size: 11px;
+}
+.onboarding-steps button {
+  border: 0;
+  background: transparent;
+  color: var(--forest-2);
+  font-size: 10px;
+  font-weight: 750;
+  padding: 0;
+  margin-top: auto;
+  cursor: pointer;
+}
+.home-explainers {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--section-gap);
+  margin-top: var(--section-gap);
+}
+.home-explainers .card > span {
+  color: var(--orange);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+.home-explainers h2 {
+  color: var(--forest);
+  font:
+    500 20px/1.2 Georgia,
+    serif;
+  margin: 9px 0;
+}
+.home-explainers p {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+  margin: 0;
 }
 .onboarding-steps p {
   color: var(--muted);
@@ -2011,10 +2085,51 @@ tbody tr:last-child td {
 .settings-accounts > div {
   min-height: 53px;
   display: grid;
-  grid-template-columns: 35px 1fr auto;
+  grid-template-columns: 35px 1fr auto auto;
   align-items: center;
   gap: 10px;
   border-top: 1px solid var(--line);
+}
+.account-edit-button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: white;
+  color: var(--forest-2);
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.account-active-toggle {
+  min-height: 40px;
+  display: flex !important;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px !important;
+}
+.account-active-toggle input {
+  min-height: 0 !important;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+}
+.account-active-toggle span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.account-active-toggle strong {
+  color: var(--ink);
+  font-size: 10px;
+}
+.account-active-toggle small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 500;
 }
 .settings-accounts > div > span {
   display: flex;
@@ -2254,6 +2369,13 @@ footer .brand-mark {
   .onboarding-steps strong {
     font-size: 14px;
   }
+  .onboarding-steps button,
+  .home-explainers p {
+    font-size: 12px;
+  }
+  .home-explainers .card > span {
+    font-size: 11px;
+  }
   .onboarding-steps .card {
     padding: 24px;
   }
@@ -2417,6 +2539,9 @@ footer .brand-mark {
     flex-basis: 100%;
   }
   .onboarding-steps {
+    grid-template-columns: 1fr;
+  }
+  .home-explainers {
     grid-template-columns: 1fr;
   }
   .mini-preview.detailed > div {

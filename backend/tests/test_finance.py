@@ -11,8 +11,10 @@ from sqlalchemy.orm import Session
 from app.analytics import dashboard_payload, financial_totals
 from app.classification import classify_transaction, transaction_fingerprint
 from app.database import Base
+from app.main import update_account
 from app.models import Account, Budget, Classification, Transaction
 from app.parsers import GenericCsvParser
+from app.schemas import AccountCreate
 
 
 def parsed_tx(account_id: int, tx_date: date, description: str, amount: float) -> Transaction:
@@ -121,3 +123,28 @@ def test_budget_surplus_calculation(db: Session):
     assert result["totals"]["budget_remaining"] == 400
     assert result["totals"]["investable_surplus"] == 400
 
+
+def test_account_details_can_be_edited(db: Session):
+    account = Account(name="Old name", type="CHECKING", institution="Bank")
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    updated = update_account(
+        account.id,
+        AccountCreate(
+            name="Household checking",
+            type="CHECKING",
+            institution="Local credit union",
+            last_four="4321",
+            current_balance=825.50,
+            balance_mode="TRANSACTION_DERIVED",
+            active=True,
+        ),
+        db,
+    )
+
+    assert updated.name == "Household checking"
+    assert updated.institution == "Local credit union"
+    assert updated.last_four == "4321"
+    assert updated.current_balance == 825.50

@@ -33,9 +33,11 @@ import {
   Columns3,
   Download,
   Flame,
+  House,
   LayoutDashboard,
   Menu,
   PiggyBank,
+  Pencil,
   Plus,
   ReceiptText,
   Repeat2,
@@ -70,6 +72,7 @@ import {
 } from "./lib/finance";
 
 const nav = [
+  ["Home", House],
   ["Overview", LayoutDashboard],
   ["Transactions", ReceiptText],
   ["Spending", CircleDollarSign],
@@ -83,70 +86,128 @@ const nav = [
   ["Settings", Settings],
 ] as const;
 
-function Onboarding({ onNavigate }: { onNavigate: (page: string) => void }) {
+function HomePage({
+  accounts,
+  transactions,
+  reviewCount,
+  onNavigate,
+}: {
+  accounts: Account[];
+  transactions: Transaction[];
+  reviewCount: number;
+  onNavigate: (page: string) => void;
+}) {
+  const hasAccount = accounts.length > 0;
+  const hasImported = transactions.length > 0;
   return (
     <>
       <div className="onboarding">
         <div className="onboarding-hero">
-          <div className="eyebrow">Welcome to Ember</div>
-          <h1>Start with a clean slate.</h1>
+          <div className="eyebrow">
+            {hasAccount ? "Your setup guide" : "Welcome to Ember"}
+          </div>
+          <h1>
+            {hasAccount
+              ? "Build your financial picture."
+              : "Start with a clean slate."}
+          </h1>
           <p>
-            No demo transactions, accounts, balances, or personal details are
-            loaded. Your financial record begins only when you create an account
-            and approve an import.
+            Ember starts empty and builds the dashboard from transactions you
+            verify. Create the account shown on your statement, preview the PDF
+            extraction, then approve only rows that match the statement.
           </p>
-          <button className="primary" onClick={() => onNavigate("Settings")}>
-            <Plus size={16} /> Create your first account
+          <button
+            className="primary"
+            onClick={() => onNavigate(hasAccount ? "Import" : "Settings")}
+          >
+            {hasAccount ? <Upload size={16} /> : <Plus size={16} />}
+            {hasAccount ? "Import a statement" : "Create your first account"}
           </button>
         </div>
         <div className="onboarding-proof">
           <span>LOCAL BY DEFAULT</span>
           <strong>Your data stays yours.</strong>
           <p>
-            Statements are parsed on this computer. Ember has no login,
-            analytics, bank credentials, or cloud storage.
+            Statements are read on this computer. Nothing is added until you
+            inspect the preview and choose Import.
           </p>
           <div>
-            <Check size={15} /> Empty SQLite database
+            <Check size={15} /> No bank login or cloud account
           </div>
           <div>
-            <Check size={15} /> PDF and CSV preview before commit
+            <Check size={15} /> PDF and CSV preview before saving
           </div>
           <div>
-            <Check size={15} /> Duplicate detection on every import
+            <Check size={15} /> Duplicate checks on every import
           </div>
         </div>
       </div>
       <div className="onboarding-steps">
-        <Card>
+        <Card className={hasAccount ? "complete" : ""}>
           <b>01</b>
           <div>
-            <strong>Add an account</strong>
+            <span>{hasAccount ? "COMPLETE" : "START HERE"}</span>
+            <strong>Create the statement&apos;s account</strong>
             <p>
-              Use a nickname, institution, type, and optional last four digits.
-              Never enter a full account number.
+              Add a nickname, bank, account type, and current balance. Only the
+              optional last four digits are needed—never a full account number.
             </p>
+            <button onClick={() => onNavigate("Settings")}>
+              {hasAccount ? "View or edit accounts" : "Create account"}
+            </button>
           </div>
         </Card>
-        <Card>
+        <Card className={hasImported ? "complete" : ""}>
           <b>02</b>
           <div>
-            <strong>Import a statement</strong>
+            <span>{hasImported ? "COMPLETE" : "NEXT"}</span>
+            <strong>Preview a PDF or CSV</strong>
             <p>
-              Upload a searchable Chase or generic PDF, or a CSV export. Inspect
-              every extracted row first.
+              Choose the matching account, upload the full statement, and check
+              the extracted row count, dates, descriptions, and signed totals.
             </p>
+            <button onClick={() => onNavigate("Import")}>Open import</button>
           </div>
         </Card>
-        <Card>
+        <Card className={hasImported && reviewCount === 0 ? "complete" : ""}>
           <b>03</b>
           <div>
-            <strong>Resolve the review inbox</strong>
+            <span>
+              {hasImported && reviewCount === 0 ? "COMPLETE" : "THEN REVIEW"}
+            </span>
+            <strong>Confirm uncertain activity</strong>
             <p>
-              Confirm ambiguous payments and create only the merchant rules you
-              trust.
+              Resolve ambiguous transfers or merchants so spending, saving, and
+              income are counted correctly across the dashboard.
             </p>
+            <button onClick={() => onNavigate("Review")}>Open review</button>
           </div>
+        </Card>
+      </div>
+      <div className="home-explainers">
+        <Card>
+          <span>WHAT “SEARCHABLE PDF” MEANS</span>
+          <h2>Text can be selected inside the statement.</h2>
+          <p>
+            If the PDF is an image scan, run local OCR first. Ember will never
+            guess transactions from an unreadable document.
+          </p>
+        </Card>
+        <Card>
+          <span>WHAT TO VERIFY</span>
+          <h2>Row count, dates, amounts, and direction.</h2>
+          <p>
+            Money out should appear negative and deposits positive. Compare the
+            preview totals with the statement before importing.
+          </p>
+        </Card>
+        <Card>
+          <span>HOW THE DASHBOARD WORKS</span>
+          <h2>Transfers are separated from real spending.</h2>
+          <p>
+            Card payments and internal transfers are excluded from spending to
+            avoid counting the same money twice.
+          </p>
         </Card>
       </div>
     </>
@@ -1584,7 +1645,17 @@ function ImportPage({
                 : "Searchable PDF or CSV · up to 25 MB · contents are never logged"}
             </span>
           </button>
-          {error && <p className="form-error">{error}</p>}
+          {error && (
+            <div className="import-error" role="alert">
+              <strong>This statement was not imported.</strong>
+              <p>{error}</p>
+              <span>
+                Confirm this is the full statement, not its cover or summary
+                page. If preview still fails, export transactions as CSV from
+                the same bank account and upload that file here.
+              </span>
+            </div>
+          )}
           <button
             className="primary wide"
             disabled={!file || busy}
@@ -1720,6 +1791,7 @@ function SettingsPage({
   });
   const [saveStatus, setSaveStatus] = useState("");
   const [showAccount, setShowAccount] = useState(false);
+  const [editingAccountId, setEditingAccountId] = useState<number | null>(null);
   const [form, setForm] = useState({
     name: "",
     type: "CHECKING",
@@ -1727,6 +1799,7 @@ function SettingsPage({
     last_four: "",
     current_balance: "0",
     balance_mode: "TRANSACTION_DERIVED",
+    active: true,
   });
   const restoreRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -1792,32 +1865,62 @@ function SettingsPage({
       setSaveStatus("Could not save while the API is offline");
     }
   }
-  async function addAccount() {
+  function resetAccountForm() {
+    setEditingAccountId(null);
+    setShowAccount(false);
+    setForm({
+      name: "",
+      type: "CHECKING",
+      institution: "",
+      last_four: "",
+      current_balance: "0",
+      balance_mode: "TRANSACTION_DERIVED",
+      active: true,
+    });
+  }
+  function startNewAccount() {
+    resetAccountForm();
+    setShowAccount(true);
+  }
+  function editAccount(account: Account) {
+    setEditingAccountId(account.id);
+    setForm({
+      name: account.name,
+      type: account.type,
+      institution: account.institution,
+      last_four: account.last_four || "",
+      current_balance: String(account.current_balance),
+      balance_mode: account.balance_mode,
+      active: account.active,
+    });
+    setShowAccount(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  async function saveAccount() {
     if (!form.name) return;
     try {
-      const response = await fetch(`${API}/accounts`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...form,
-          current_balance: Number(form.current_balance),
-          last_four: form.last_four || null,
-          save_snapshot: true,
-        }),
-      });
+      const response = await fetch(
+        editingAccountId
+          ? `${API}/accounts/${editingAccountId}`
+          : `${API}/accounts`,
+        {
+          method: editingAccountId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...form,
+            current_balance: Number(form.current_balance),
+            last_four: form.last_four || null,
+            save_snapshot: true,
+          }),
+        },
+      );
       if (!response.ok) throw new Error();
-      setShowAccount(false);
-      setForm({
-        name: "",
-        type: "CHECKING",
-        institution: "",
-        last_four: "",
-        current_balance: "0",
-        balance_mode: "TRANSACTION_DERIVED",
-      });
+      const message = editingAccountId ? "Account updated" : "Account added";
+      resetAccountForm();
+      setSaveStatus(message);
       onComplete();
     } catch {
-      setSaveStatus("Could not add the account while the API is offline");
+      setSaveStatus("Could not save the account while the API is offline");
     }
   }
   async function restore(file: File | null) {
@@ -1844,14 +1947,23 @@ function SettingsPage({
         action={
           <button
             className="primary"
-            onClick={() => setShowAccount(!showAccount)}
+            onClick={showAccount ? resetAccountForm : startNewAccount}
           >
-            <Plus size={16} /> Add account
+            {showAccount ? <X size={16} /> : <Plus size={16} />}
+            {showAccount ? "Close editor" : "Add account"}
           </button>
         }
       />
       {showAccount && (
         <Card className="account-form">
+          <div className="card-heading">
+            <div>
+              <span>{editingAccountId ? "EDIT ACCOUNT" : "NEW ACCOUNT"}</span>
+              <h2>
+                {editingAccountId ? "Update account details" : "Add an account"}
+              </h2>
+            </div>
+          </div>
           <div className="form-grid">
             <label>
               Account name
@@ -1937,13 +2049,26 @@ function SettingsPage({
                 <option value="MANUAL">Manual balance</option>
               </select>
             </label>
+            <label className="account-active-toggle">
+              <input
+                type="checkbox"
+                checked={form.active}
+                onChange={(event) =>
+                  setForm({ ...form, active: event.target.checked })
+                }
+              />
+              <span>
+                <strong>Include in Ember</strong>
+                <small>Turn this off to archive the account.</small>
+              </span>
+            </label>
           </div>
           <div className="form-actions">
-            <button className="secondary" onClick={() => setShowAccount(false)}>
+            <button className="secondary" onClick={resetAccountForm}>
               Cancel
             </button>
-            <button className="primary" onClick={addAccount}>
-              Save account
+            <button className="primary" onClick={saveAccount}>
+              {editingAccountId ? "Save changes" : "Save account"}
             </button>
           </div>
         </Card>
@@ -1968,12 +2093,20 @@ function SettingsPage({
                     <small>
                       {a.type.replaceAll("_", " ")} ·{" "}
                       {a.balance_mode === "MANUAL" ? "manual" : "derived"}
+                      {!a.active ? " · archived" : ""}
                     </small>
                   </span>
                   <b>
                     {a.type === "CREDIT_CARD" ? "−" : ""}
                     {money(Math.abs(a.current_balance))}
                   </b>
+                  <button
+                    className="account-edit-button"
+                    onClick={() => editAccount(a)}
+                    aria-label={`Edit ${a.name}`}
+                  >
+                    <Pencil size={14} /> Edit
+                  </button>
                 </div>
               ))}
               {!accounts.length && (
@@ -2075,7 +2208,7 @@ function SettingsPage({
               manually tracked
             </h2>
             <p>Manual balance changes create a dated net-worth snapshot.</p>
-            <button className="secondary" onClick={() => setShowAccount(true)}>
+            <button className="secondary" onClick={startNewAccount}>
               <Plus size={16} /> Add asset account
             </button>
           </Card>
@@ -2225,7 +2358,7 @@ function TransactionDrawer({
 }
 
 export default function FinanceDashboard() {
-  const [page, setPage] = useState("Overview");
+  const [page, setPage] = useState("Home");
   const [period, setPeriod] = useState("this_month");
   const [mobile, setMobile] = useState(false);
   const [dashboard, setDashboard] = useState<Dashboard>(EMPTY_DASHBOARD);
@@ -2316,8 +2449,15 @@ export default function FinanceDashboard() {
   }
   let content: ReactNode;
   if (!loaded) content = <Loading />;
-  else if (page === "Overview" && online && !accounts.length)
-    content = <Onboarding onNavigate={navigate} />;
+  else if (page === "Home")
+    content = (
+      <HomePage
+        accounts={accounts}
+        transactions={transactions}
+        reviewCount={dashboard.review_count}
+        onNavigate={navigate}
+      />
+    );
   else if (page === "Overview")
     content = (
       <Overview
