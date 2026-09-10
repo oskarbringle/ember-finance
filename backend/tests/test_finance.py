@@ -88,6 +88,52 @@ def test_zelle_rent_is_housing_expense():
     assert result.category == "Housing"
 
 
+@pytest.mark.parametrize(
+    ("description", "category"),
+    [
+        ("QT 1721 ALPHARETTA GA", "Gas & Fuel"),
+        ("RACETRAC 2566 ALPHARETTA GA", "Gas & Fuel"),
+        ("CHEVRON 0376444 DORAVILLE GA", "Gas & Fuel"),
+        ("TST* PARK TAVERN ATLANTA GA", "Dining"),
+        ("CHICK-FIL-A #04828 CUMMING GA", "Dining"),
+        ("MTA*NYCT PAYGO NEW YORK NY", "Transportation"),
+        ("MICROSOFT*XBOX GAME PASS", "Subscriptions"),
+        ("FOREIGN TRANSACTION FEE", "Fees"),
+        ("STARBUCKS STORE 26528 NEW YORK NY", "Dining"),
+        ("NEIGHBOR'S PUB ATLANTA GA", "Bars & Nightlife"),
+        ("COSTCO GAS #1175 CUMMING GA", "Gas & Fuel"),
+        ("UNIQLO UNION SQUARE NEW YORK NY", "Shopping"),
+        ("CARD PURCHASE 12/31 JAPAN BULLET TRAIN", "Transportation"),
+    ],
+)
+def test_recognizable_expenses_are_categorized_automatically(
+    description: str,
+    category: str,
+):
+    result = classify_transaction(description, -25, account_type="CREDIT_CARD")
+    assert result.classification == Classification.EXPENSE
+    assert result.category == category
+    assert result.confidence >= 0.9
+
+
+def test_chase_payment_word_order_is_detected():
+    result = classify_transaction(
+        "Payment To Chase Card Ending In 0306",
+        -850,
+        account_type="CHECKING",
+    )
+    assert result.classification == Classification.CREDIT_CARD_PAYMENT
+
+
+def test_ocr_misspelled_savings_transfer_is_detected():
+    result = classify_transaction(
+        "Online Transter To Sav ...9231",
+        -500,
+        account_type="CHECKING",
+    )
+    assert result.classification == Classification.SAVING
+
+
 def test_positive_deposit_defaults_to_income_but_card_credit_defaults_to_refund():
     deposit = classify_transaction("PUBLIX ADJUSTMENT", 2500, account_type="CHECKING")
     card_credit = classify_transaction("MERCHANT ADJUSTMENT", 35, account_type="CREDIT_CARD")
