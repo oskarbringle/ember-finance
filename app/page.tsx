@@ -62,7 +62,6 @@ import {
   API_BASE_URL as API,
   CHART_COLORS as COLORS,
   EMPTY_DASHBOARD,
-  currentMonthLabel,
   fetchFinanceData,
   formatCurrency as money,
   type Account,
@@ -85,6 +84,51 @@ const nav = [
   ["Import", Upload],
   ["Settings", Settings],
 ] as const;
+
+const REPORTING_PERIODS = [
+  ["this_month", "This month"],
+  ["last_month", "Last month"],
+  ["ytd", "Year to date"],
+  ["pre_job", "Before job start"],
+  ["post_job", "Since job start"],
+] as const;
+
+function reportingPeriodLabel(period: string) {
+  return (
+    REPORTING_PERIODS.find(([value]) => value === period)?.[1] ||
+    "Selected period"
+  );
+}
+
+function ReportingPeriodSelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (period: string) => void;
+}) {
+  return (
+    <label className="period-control">
+      <span>Reporting period</span>
+      <select value={value} onChange={(event) => onChange(event.target.value)}>
+        {REPORTING_PERIODS.map(([period, label]) => (
+          <option key={period} value={period}>
+            {label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function transactionsInRange(transactions: Transaction[], data: Dashboard) {
+  if (!data.range.start || !data.range.end) return [];
+  return transactions.filter(
+    (transaction) =>
+      transaction.transaction_date >= data.range.start &&
+      transaction.transaction_date <= data.range.end,
+  );
+}
 
 function HomePage({
   accounts,
@@ -221,6 +265,8 @@ function Overview({
   onNavigate,
   onFilter,
   onSelect,
+  period,
+  onPeriodChange,
 }: {
   data: Dashboard;
   transactions: Transaction[];
@@ -228,6 +274,8 @@ function Overview({
   onNavigate: (page: string) => void;
   onFilter: (kind: string) => void;
   onSelect: (tx: Transaction) => void;
+  period: string;
+  onPeriodChange: (period: string) => void;
 }) {
   const savingsTrend = data.monthly.map((row) => ({
     month: row.month,
@@ -241,17 +289,20 @@ function Overview({
   return (
     <>
       <PageHeader
-        eyebrow={currentMonthLabel()}
+        eyebrow={reportingPeriodLabel(period)}
         title="Your money, in focus."
         description={
           transactions.length
-            ? `This month’s savings rate is ${data.totals.savings_rate}%. Every number opens to the transactions behind it.`
+            ? `The selected period’s savings rate is ${data.totals.savings_rate}%. Every number opens to the transactions behind it.`
             : "Your accounts are ready. Import a statement to begin building an explainable financial picture."
         }
         action={
-          <button className="primary" onClick={() => onNavigate("Import")}>
-            <Upload size={16} /> Import transactions
-          </button>
+          <div className="page-actions">
+            <ReportingPeriodSelect value={period} onChange={onPeriodChange} />
+            <button className="primary" onClick={() => onNavigate("Import")}>
+              <Upload size={16} /> Import transactions
+            </button>
+          </div>
         }
       />
       <div className="metrics-grid">
@@ -644,12 +695,18 @@ function SpendingPage({
   data,
   transactions,
   onFilter,
+  period,
+  onPeriodChange,
 }: {
   data: Dashboard;
   transactions: Transaction[];
   onFilter: (category: string) => void;
+  period: string;
+  onPeriodChange: (period: string) => void;
 }) {
-  const expenses = transactions.filter((tx) => tx.classification === "EXPENSE");
+  const expenses = transactionsInRange(transactions, data).filter(
+    (tx) => tx.classification === "EXPENSE",
+  );
   const merchantSpend = Object.entries(
     expenses.reduce<Record<string, number>>((acc, tx) => {
       acc[tx.normalized_merchant] =
@@ -668,6 +725,9 @@ function SpendingPage({
         eyebrow="Spending intelligence"
         title="See where it really goes."
         description="Refunds and reimbursements are netted against spending. Transfers never appear here."
+        action={
+          <ReportingPeriodSelect value={period} onChange={onPeriodChange} />
+        }
       />
       <div className="three-stats">
         <Card>
@@ -911,12 +971,17 @@ function MonthlyReportPage({
   data,
   transactions,
   onFilter,
+  period,
+  onPeriodChange,
 }: {
   data: Dashboard;
   transactions: Transaction[];
   onFilter: (value: string) => void;
+  period: string;
+  onPeriodChange: (period: string) => void;
 }) {
-  const expenses = transactions
+  const periodTransactions = transactionsInRange(transactions, data);
+  const expenses = periodTransactions
     .filter((tx) => tx.classification === "EXPENSE")
     .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
   const merchants = Object.entries(
@@ -932,15 +997,18 @@ function MonthlyReportPage({
     <>
       <PageHeader
         eyebrow="Monthly summary"
-        title={`${currentMonthLabel()}, at a glance.`}
+        title={`${reportingPeriodLabel(period)}, at a glance.`}
         description="A factual close-up of income, spending, saving, investing, and the changes that shaped the month."
         action={
-          <a className="secondary" href={`${API}/export/transactions.csv`}>
-            <Download size={16} /> Export transactions
-          </a>
+          <div className="page-actions">
+            <ReportingPeriodSelect value={period} onChange={onPeriodChange} />
+            <a className="secondary" href={`${API}/export/transactions.csv`}>
+              <Download size={16} /> Export full ledger
+            </a>
+          </div>
         }
       />
-      {transactions.length ? (
+      {periodTransactions.length ? (
         <>
           <Card className="report-hero">
             <div>
@@ -1180,7 +1248,15 @@ function ReviewPage({
   );
 }
 
-function FirePage({ data }: { data: Dashboard }) {
+function FirePage({
+  data,
+  period,
+  onPeriodChange,
+}: {
+  data: Dashboard;
+  period: string;
+  onPeriodChange: (period: string) => void;
+}) {
   const fireData = data.monthly.map((row) => ({
     month: row.month,
     contribution: Number(row.saving) + Number(row.investing),
@@ -1201,6 +1277,9 @@ function FirePage({ data }: { data: Dashboard }) {
         eyebrow="FIRE progress"
         title="Turn the gap into freedom."
         description="Savings rate = savings plus investment contributions ÷ earned income. Transfers and reimbursements are excluded."
+        action={
+          <ReportingPeriodSelect value={period} onChange={onPeriodChange} />
+        }
       />
       <div className="fire-hero">
         <div>
@@ -2467,6 +2546,8 @@ export default function FinanceDashboard() {
         onNavigate={navigate}
         onFilter={filterTo}
         onSelect={setSelected}
+        period={period}
+        onPeriodChange={setPeriod}
       />
     );
   else if (page === "Transactions")
@@ -2485,6 +2566,8 @@ export default function FinanceDashboard() {
         data={dashboard}
         transactions={transactions}
         onFilter={filterTo}
+        period={period}
+        onPeriodChange={setPeriod}
       />
     );
   else if (page === "Review")
@@ -2497,9 +2580,14 @@ export default function FinanceDashboard() {
         data={dashboard}
         transactions={transactions}
         onFilter={filterTo}
+        period={period}
+        onPeriodChange={setPeriod}
       />
     );
-  else if (page === "FIRE Plan") content = <FirePage data={dashboard} />;
+  else if (page === "FIRE Plan")
+    content = (
+      <FirePage data={dashboard} period={period} onPeriodChange={setPeriod} />
+    );
   else if (page === "Recurring")
     content = <RecurringPage transactions={transactions} />;
   else if (page === "Net Worth")
@@ -2560,17 +2648,6 @@ export default function FinanceDashboard() {
               : "API offline · run the local start script"}
           </div>
           <div className="top-actions">
-            <select
-              value={period}
-              onChange={(e) => setPeriod(e.target.value)}
-              aria-label="Date period"
-            >
-              <option value="this_month">This Month</option>
-              <option value="last_month">Last Month</option>
-              <option value="ytd">YTD</option>
-              <option value="pre_job">Pre-Job</option>
-              <option value="post_job">Post-Job</option>
-            </select>
             <div className="avatar">EF</div>
           </div>
         </header>

@@ -69,6 +69,7 @@ export type ImportPreview = {
 };
 
 export type Dashboard = {
+  range: { start: string; end: string };
   totals: {
     income: number;
     spending: number;
@@ -89,6 +90,7 @@ export type Dashboard = {
 };
 
 export const EMPTY_DASHBOARD: Dashboard = {
+  range: { start: "", end: "" },
   totals: {
     income: 0,
     spending: 0,

@@ -205,8 +205,18 @@ async def preview_import(
     preview_rows = []
     duplicates = 0
     uncertain = 0
+    occurrences: dict[tuple[date, float, str], int] = {}
     for row in parsed:
-        fingerprint = transaction_fingerprint(account_id, row.transaction_date, row.amount, row.description)
+        occurrence_key = (row.transaction_date, row.amount, row.description)
+        occurrence = occurrences.get(occurrence_key, 0)
+        occurrences[occurrence_key] = occurrence + 1
+        fingerprint = transaction_fingerprint(
+            account_id,
+            row.transaction_date,
+            row.amount,
+            row.description,
+            occurrence,
+        )
         if db.scalar(select(Transaction.id).where(Transaction.fingerprint == fingerprint)):
             duplicates += 1
             continue

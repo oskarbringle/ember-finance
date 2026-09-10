@@ -99,6 +99,14 @@ def classify_transaction(description: str, amount: float, user_rules: list[dict]
     return ClassificationResult(merchant, "Miscellaneous", Classification.UNKNOWN, 0.3)
 
 
-def transaction_fingerprint(account_id: int, transaction_date: date, amount: float, description: str) -> str:
+def transaction_fingerprint(
+    account_id: int,
+    transaction_date: date,
+    amount: float,
+    description: str,
+    occurrence: int = 0,
+) -> str:
     stable = f"{account_id}|{transaction_date.isoformat()}|{amount:.2f}|{clean_description(description)}"
+    if occurrence:
+        stable = f"{stable}|{occurrence}"
     return hashlib.sha256(stable.encode("utf-8")).hexdigest()

@@ -253,7 +253,7 @@ main {
   align-items: center;
   gap: 9px;
 }
-.top-actions select {
+.period-control select {
   background: white;
   border: 1px solid var(--line);
   padding: 9px 31px 9px 13px;
@@ -262,6 +262,28 @@ main {
   font-size: 12px;
   font-weight: 650;
   outline: none;
+}
+.page-actions {
+  display: flex;
+  align-items: end;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.period-control {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 1.1px;
+  text-transform: uppercase;
+}
+.period-control select {
+  min-height: 40px;
+  min-width: 148px;
+  text-transform: none;
+  letter-spacing: normal;
 }
 .top-actions > button,
 .mobile-menu {
@@ -2301,7 +2323,7 @@ footer .brand-mark {
     padding-inline: clamp(40px, 3vw, 76px);
   }
   .connection,
-  .top-actions select {
+  .period-control select {
     font-size: 13px;
   }
   .page-heading p {
@@ -2439,6 +2461,14 @@ footer .brand-mark {
   .page-heading {
     flex-direction: column;
     margin-bottom: 22px;
+  }
+  .page-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .period-control,
+  .period-control select {
+    width: 100%;
   }
   .page-heading h1 {
     font-size: 34px;

@@ -8,7 +8,7 @@ There is no login, telemetry, bank credential, cloud database, or automatic uplo
 
 - Clean first-run onboarding with no demo accounts, balances, transactions, or budgets
 - Guided Home setup and editable account details, balances, and active status
-- Searchable PDF import for Chase checking, savings, and credit-card statements
+- Chase checking, savings, and credit-card PDF import, including on-device OCR for image-based deposit tables
 - Broad generic PDF support for numeric, ISO, and month-name dates; debit/credit suffixes; extracted tables; and wrapped rows
 - CSV import for date/description/amount or debit/credit layouts
 - Preview-before-commit, sign checks, confidence reporting, and deterministic duplicate detection
@@ -19,7 +19,7 @@ There is no login, telemetry, bank credential, cloud database, or automatic uplo
 
 ## Start on your Mac
 
-Requirements: Python 3.11+ and Node.js 22.13+.
+Requirements: macOS, Python 3.11+, Node.js 22.13+, and Apple Command Line Tools (`xcode-select --install`) for the private OCR fallback.
 
 First, open Terminal and move into the downloaded project folder. Running the command from `~` will produce “No such file or directory.”
 
@@ -41,7 +41,7 @@ The start script creates an isolated Python environment, installs missing depend
 4. Commit only when the extracted rows match the statement.
 5. Open **Review** and resolve uncertain person-to-person payments or unfamiliar descriptions.
 
-PDF extraction is deterministic and entirely local. Searchable Chase statements receive specialized parsing. Other searchable layouts use table and flexible text-row extraction and are marked for review. Image-only scans are rejected with local OCR instructions rather than guessed at. A bank can change its layout, so always reconcile row count and totals against the original statement before relying on the dashboard.
+PDF extraction is deterministic and entirely local. Chase card statements use their embedded transaction text. When a Chase deposit statement renders its transaction table as images, Ember invokes Apple Vision on your Mac, checks transaction amounts against running balances, and reports whether each statement period reconciles. The first OCR import may take a minute while a small local helper is compiled. Other searchable layouts use table and flexible text-row extraction and are marked for review. A bank can change its layout, so always reconcile row count and totals against the original statement before relying on the dashboard.
 
 If a searchable statement layout is not recognized, use the bank’s CSV export when available or contribute a fully redacted fixture and parser test. Never commit a real statement.
 
