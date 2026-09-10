@@ -70,6 +70,11 @@ class RuleCreate(BaseModel):
     active: bool = True
 
 
+class DuplicateResolution(BaseModel):
+    transaction_ids: list[int]
+    keep_account_id: int
+
+
 class BudgetUpsert(BaseModel):
     month: str
     spending_target: float
@@ -82,4 +87,3 @@ class BudgetUpsert(BaseModel):
 class SnapshotCreate(BaseModel):
     balance: float
     snapshot_date: date = Field(default_factory=date.today)
-

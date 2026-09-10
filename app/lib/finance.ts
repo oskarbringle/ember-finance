@@ -62,6 +62,7 @@ export type ImportPreview = {
   ready_to_import: number;
   committed?: number;
   duplicates: number;
+  cross_account_duplicates?: number;
   uncertain: number;
   preview: ImportPreviewRow[];
   parse_report?: PdfParseReport;
@@ -129,7 +130,7 @@ export async function fetchFinanceData(period: string) {
   const [dashboardResponse, transactionsResponse, accountsResponse] =
     await Promise.all([
       fetch(`${API_BASE_URL}/dashboard?period=${period}`),
-      fetch(`${API_BASE_URL}/transactions`),
+      fetch(`${API_BASE_URL}/transactions?limit=2000`),
       fetch(`${API_BASE_URL}/accounts`),
     ]);
 

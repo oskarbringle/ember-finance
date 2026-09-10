@@ -46,12 +46,31 @@ def normalize_merchant(description: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip().title() or "Unknown merchant"
 
 
-def classify_transaction(description: str, amount: float, user_rules: list[dict] | None = None) -> ClassificationResult:
+def classify_transaction(
+    description: str,
+    amount: float,
+    user_rules: list[dict] | None = None,
+    account_type: str | None = None,
+) -> ClassificationResult:
     text = clean_description(description)
     merchant = normalize_merchant(description)
 
     for rule in sorted(user_rules or [], key=lambda row: row.get("priority", 100), reverse=True):
-        if rule.get("active", True) and re.search(rule["pattern"], text, re.IGNORECASE):
+        classification = str(rule["classification"])
+        invalid_direction = (
+            amount > 0
+            and classification
+            in {Classification.EXPENSE, Classification.SAVING, Classification.INVESTMENT}
+        ) or (
+            amount < 0
+            and classification
+            in {Classification.INCOME, Classification.REFUND, Classification.REIMBURSEMENT}
+        )
+        if (
+            rule.get("active", True)
+            and not invalid_direction
+            and re.search(rule["pattern"], text, re.IGNORECASE)
+        ):
             return ClassificationResult(
                 rule.get("merchant") or merchant,
                 rule["category"],
@@ -91,11 +110,13 @@ def classify_transaction(description: str, amount: float, user_rules: list[dict]
         (r"AMC|CINEMA|TICKETMASTER", "Entertainment"),
     ]
     for pattern, category in category_patterns:
-        if re.search(pattern, text):
+        if amount < 0 and re.search(pattern, text):
             return ClassificationResult(merchant, category, Classification.EXPENSE, 0.91)
 
+    if amount > 0 and account_type == "CREDIT_CARD":
+        return ClassificationResult(merchant, "Refund", Classification.REFUND, 0.82)
     if amount > 0:
-        return ClassificationResult(merchant, "Other Income", Classification.UNKNOWN, 0.35)
+        return ClassificationResult(merchant, "Other Income", Classification.INCOME, 0.82)
     return ClassificationResult(merchant, "Miscellaneous", Classification.UNKNOWN, 0.3)
 
 

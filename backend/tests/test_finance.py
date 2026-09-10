@@ -4,17 +4,22 @@ import io
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.analytics import dashboard_payload, financial_totals
 from app.classification import classify_transaction, transaction_fingerprint
 from app.database import Base
-from app.main import update_account
+from app.main import (
+    _existing_content_count,
+    resolve_duplicates,
+    update_account,
+    update_transaction,
+)
 from app.models import Account, Budget, Classification, Transaction
 from app.parsers import GenericCsvParser
-from app.schemas import AccountCreate
+from app.schemas import AccountCreate, DuplicateResolution, TransactionUpdate
 
 
 def parsed_tx(account_id: int, tx_date: date, description: str, amount: float) -> Transaction:
@@ -81,6 +86,97 @@ def test_zelle_rent_is_housing_expense():
     result = classify_transaction("ZELLE RENT LANDLORD", -1505)
     assert result.classification == Classification.EXPENSE
     assert result.category == "Housing"
+
+
+def test_positive_deposit_defaults_to_income_but_card_credit_defaults_to_refund():
+    deposit = classify_transaction("PUBLIX ADJUSTMENT", 2500, account_type="CHECKING")
+    card_credit = classify_transaction("MERCHANT ADJUSTMENT", 35, account_type="CREDIT_CARD")
+    assert deposit.classification == Classification.INCOME
+    assert deposit.category == "Other Income"
+    assert card_credit.classification == Classification.REFUND
+
+
+def test_learned_expense_rule_does_not_turn_positive_money_into_an_expense():
+    rules = [
+        {
+            "pattern": "PUBLIX",
+            "merchant": "Publix",
+            "category": "Groceries",
+            "classification": "EXPENSE",
+            "priority": 200,
+            "active": True,
+        }
+    ]
+    result = classify_transaction(
+        "PUBLIX ADJUSTMENT",
+        25,
+        rules,
+        account_type="CHECKING",
+    )
+    assert result.classification == Classification.INCOME
+
+
+def test_review_choice_learns_matching_unreviewed_transactions(db: Session):
+    account = Account(name="Checking", type="CHECKING", institution="Bank")
+    db.add(account)
+    db.flush()
+    reviewed = parsed_tx(account.id, date(2026, 9, 1), "COFFEE SHOP #123", -8)
+    similar = parsed_tx(account.id, date(2026, 9, 2), "COFFEE SHOP #456", -12)
+    opposite_direction = parsed_tx(
+        account.id, date(2026, 9, 3), "COFFEE SHOP #789", 5
+    )
+    reviewed.normalized_merchant = "Coffee Shop"
+    similar.normalized_merchant = "Coffee Shop"
+    opposite_direction.normalized_merchant = "Coffee Shop"
+    reviewed.classification = Classification.UNKNOWN
+    similar.classification = Classification.UNKNOWN
+    opposite_direction.classification = Classification.UNKNOWN
+    db.add_all([reviewed, similar, opposite_direction])
+    db.commit()
+
+    update_transaction(
+        reviewed.id,
+        TransactionUpdate(
+            category="Dining",
+            classification="EXPENSE",
+            manually_reviewed=True,
+            create_rule=True,
+        ),
+        db,
+    )
+
+    db.refresh(similar)
+    assert similar.classification == Classification.EXPENSE
+    assert similar.category == "Dining"
+    assert similar.confidence == 0.99
+    db.refresh(opposite_direction)
+    assert opposite_direction.classification == Classification.UNKNOWN
+
+
+def test_cross_account_duplicates_can_be_detected_and_resolved(db: Session):
+    checking = Account(name="Checking", type="CHECKING", institution="Bank")
+    savings = Account(name="Savings", type="SAVINGS", institution="Bank")
+    db.add_all([checking, savings])
+    db.flush()
+    original = parsed_tx(checking.id, date(2026, 9, 5), "LOCAL MARKET", -42)
+    duplicate = parsed_tx(savings.id, date(2026, 9, 5), "LOCAL MARKET", -42)
+    db.add_all([original, duplicate])
+    db.commit()
+
+    assert _existing_content_count(
+        db, date(2026, 9, 5), -42, "LOCAL MARKET"
+    ) == 2
+    result = resolve_duplicates(
+        DuplicateResolution(
+            transaction_ids=[original.id, duplicate.id],
+            keep_account_id=checking.id,
+        ),
+        db,
+    )
+
+    assert result["removed"] == 1
+    remaining = db.scalars(select(Transaction)).all()
+    assert [transaction.account_id for transaction in remaining] == [checking.id]
 
 
 def test_core_accounting_has_no_double_counting():

@@ -17,12 +17,21 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .analytics import current_net_worth, dashboard_payload, date_bounds, financial_totals
-from .classification import classify_transaction, transaction_fingerprint
+from .classification import clean_description, classify_transaction, transaction_fingerprint
 from .database import Base, DATABASE_PATH, engine, get_db
 from .models import Account, BalanceSnapshot, Budget, Category, Classification, ImportBatch, Rule, Setting, Transaction
 from .parsers import GenericCsvParser, PdfStatementParser
 from .sample_data import initialize_reference_data
-from .schemas import AccountCreate, AccountRead, BudgetUpsert, RuleCreate, SnapshotCreate, TransactionRead, TransactionUpdate
+from .schemas import (
+    AccountCreate,
+    AccountRead,
+    BudgetUpsert,
+    DuplicateResolution,
+    RuleCreate,
+    SnapshotCreate,
+    TransactionRead,
+    TransactionUpdate,
+)
 
 
 @asynccontextmanager
@@ -43,6 +52,7 @@ async def lifespan(_: FastAPI):
             )
             if original:
                 refund.category = original.category
+        _reclassify_automatic_transactions(db)
         db.commit()
     yield
 
@@ -151,12 +161,48 @@ def update_transaction(transaction_id: int, payload: TransactionUpdate, db: Sess
         setattr(transaction, field, value)
     transaction.confidence = 1.0
     if payload.create_rule:
-        pattern = payload.rule_pattern or re.escape(transaction.raw_description)
-        db.add(Rule(
-            name=f"Rule for {transaction.normalized_merchant}", pattern=pattern,
-            merchant=transaction.normalized_merchant, category=transaction.category,
-            classification=transaction.classification, priority=200, user_created=True,
-        ))
+        pattern = payload.rule_pattern or re.escape(transaction.normalized_merchant.upper())
+        try:
+            compiled = re.compile(pattern, re.IGNORECASE)
+        except re.error as exc:
+            raise HTTPException(400, "Learning pattern is not valid") from exc
+        existing_rule = db.scalar(
+            select(Rule).where(
+                Rule.pattern == pattern,
+                Rule.classification == transaction.classification,
+                Rule.category == transaction.category,
+            )
+        )
+        if existing_rule:
+            existing_rule.active = True
+            existing_rule.priority = 200
+        else:
+            db.add(
+                Rule(
+                    name=f"Rule for {transaction.normalized_merchant}",
+                    pattern=pattern,
+                    merchant=transaction.normalized_merchant,
+                    category=transaction.category,
+                    classification=transaction.classification,
+                    priority=200,
+                    user_created=True,
+                )
+            )
+        candidates = db.scalars(
+            select(Transaction).where(
+                Transaction.id != transaction.id,
+                Transaction.manually_reviewed.is_(False),
+            )
+        ).all()
+        for candidate in candidates:
+            same_direction = (candidate.amount > 0) == (transaction.amount > 0)
+            if same_direction and compiled.search(
+                clean_description(candidate.raw_description)
+            ):
+                candidate.normalized_merchant = transaction.normalized_merchant
+                candidate.category = transaction.category
+                candidate.classification = transaction.classification
+                candidate.confidence = 0.99
     db.commit()
     db.refresh(transaction)
     return transaction
@@ -177,6 +223,72 @@ def _user_rules(db: Session) -> list[dict]:
          "classification": rule.classification, "priority": rule.priority, "active": rule.active}
         for rule in db.scalars(select(Rule).where(Rule.active.is_(True)))
     ]
+
+
+def _reclassify_automatic_transactions(db: Session) -> None:
+    rules = _user_rules(db)
+    transactions = db.scalars(
+        select(Transaction).where(
+            Transaction.manually_reviewed.is_(False),
+            (Transaction.classification == Classification.UNKNOWN)
+            | (
+                (Transaction.classification == Classification.EXPENSE)
+                & (Transaction.amount > 0)
+            ),
+        )
+    ).all()
+    for transaction in transactions:
+        account = db.get(Account, transaction.account_id)
+        result = classify_transaction(
+            transaction.raw_description,
+            transaction.amount,
+            rules,
+            account.type if account else None,
+        )
+        if result.classification == Classification.UNKNOWN:
+            continue
+        transaction.normalized_merchant = result.merchant
+        transaction.category = result.category
+        transaction.classification = result.classification
+        transaction.confidence = result.confidence
+
+
+def _existing_content_count(
+    db: Session,
+    transaction_date: date,
+    amount: float,
+    description: str,
+) -> int:
+    return _existing_content_counts(db).get(
+        (transaction_date, round(amount, 2), clean_description(description)),
+        0,
+    )
+
+
+def _existing_content_counts(db: Session) -> dict[tuple[date, float, str], int]:
+    counts: dict[tuple[date, float, str], int] = {}
+    for transaction in db.scalars(select(Transaction)):
+        key = (
+            transaction.transaction_date,
+            round(transaction.amount, 2),
+            clean_description(transaction.raw_description),
+        )
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _existing_content_accounts(
+    db: Session,
+) -> dict[tuple[date, float, str], set[int]]:
+    accounts: dict[tuple[date, float, str], set[int]] = {}
+    for transaction in db.scalars(select(Transaction)):
+        key = (
+            transaction.transaction_date,
+            round(transaction.amount, 2),
+            clean_description(transaction.raw_description),
+        )
+        accounts.setdefault(key, set()).add(transaction.account_id)
+    return accounts
 
 
 @app.post("/api/imports/preview")
@@ -204,10 +316,16 @@ async def preview_import(
     rules = _user_rules(db)
     preview_rows = []
     duplicates = 0
+    cross_account_duplicates = 0
     uncertain = 0
+    existing_content_accounts = _existing_content_accounts(db)
     occurrences: dict[tuple[date, float, str], int] = {}
     for row in parsed:
-        occurrence_key = (row.transaction_date, row.amount, row.description)
+        occurrence_key = (
+            row.transaction_date,
+            round(row.amount, 2),
+            clean_description(row.description),
+        )
         occurrence = occurrences.get(occurrence_key, 0)
         occurrences[occurrence_key] = occurrence + 1
         fingerprint = transaction_fingerprint(
@@ -220,7 +338,14 @@ async def preview_import(
         if db.scalar(select(Transaction.id).where(Transaction.fingerprint == fingerprint)):
             duplicates += 1
             continue
-        result = classify_transaction(row.description, row.amount, rules)
+        if existing_content_accounts.get(occurrence_key, set()) - {account_id}:
+            cross_account_duplicates += 1
+        result = classify_transaction(
+            row.description,
+            row.amount,
+            rules,
+            account.type,
+        )
         category = result.category
         if result.classification == Classification.REFUND:
             original = db.scalar(
@@ -257,7 +382,10 @@ async def preview_import(
     db.commit()
     return {
         "batch_id": batch_id, "account": account.name, "total_rows": len(parsed),
-        "ready_to_import": len(preview_rows), "duplicates": duplicates, "uncertain": uncertain,
+        "ready_to_import": len(preview_rows),
+        "duplicates": duplicates,
+        "cross_account_duplicates": cross_account_duplicates,
+        "uncertain": uncertain,
         "preview": preview_rows[:50],
         "parser": getattr(parser, "provider", "unknown"),
         "parse_report": getattr(parser, "last_report", {}),
@@ -292,6 +420,50 @@ def commit_import(batch_id: str, db: Session = Depends(get_db)):
     batch.preview_json = "[]"
     db.commit()
     return {"batch_id": batch.id, "committed": committed, "duplicates": duplicates, "uncertain": batch.uncertain_rows, "status": batch.status}
+
+
+@app.post("/api/duplicates/resolve")
+def resolve_duplicates(payload: DuplicateResolution, db: Session = Depends(get_db)):
+    unique_ids = set(payload.transaction_ids)
+    if len(unique_ids) < 2:
+        raise HTTPException(400, "Choose at least two duplicate transactions")
+    transactions: list[Transaction] = []
+    id_list = list(unique_ids)
+    for start in range(0, len(id_list), 500):
+        transactions.extend(
+            db.scalars(
+                select(Transaction).where(
+                    Transaction.id.in_(id_list[start : start + 500])
+                )
+            )
+        )
+    if len(transactions) != len(unique_ids):
+        raise HTTPException(404, "One or more duplicate transactions were not found")
+    if not any(tx.account_id == payload.keep_account_id for tx in transactions):
+        raise HTTPException(400, "The account to keep is not in this duplicate group")
+    grouped: dict[tuple[date, float, str], list[Transaction]] = {}
+    for transaction in transactions:
+        signature = (
+            transaction.transaction_date,
+            round(transaction.amount, 2),
+            clean_description(transaction.raw_description),
+        )
+        grouped.setdefault(signature, []).append(transaction)
+    if any(
+        len(group) < 2
+        or not any(tx.account_id == payload.keep_account_id for tx in group)
+        for group in grouped.values()
+    ):
+        raise HTTPException(400, "Every duplicate group must include the account to keep")
+    removed = 0
+    for transaction in transactions:
+        if transaction.account_id != payload.keep_account_id:
+            db.delete(transaction)
+            removed += 1
+    if not removed:
+        raise HTTPException(400, "No cross-account duplicates were selected")
+    db.commit()
+    return {"removed": removed, "kept_account_id": payload.keep_account_id}
 
 
 @app.get("/api/imports")

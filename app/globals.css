@@ -1360,6 +1360,37 @@ tbody tr:last-child td {
   background: var(--forest);
   color: white;
 }
+.review-question button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.duplicate-question button {
+  min-height: 42px;
+  font-size: 12px;
+}
+.bulk-duplicate-actions {
+  margin: 20px 0 24px;
+  padding: 16px;
+  border: 1px solid #d8ded9;
+  border-radius: 9px;
+  background: #fafbf9;
+}
+.bulk-duplicate-actions > span {
+  font-family: Georgia, serif;
+  font-size: 16px;
+  color: var(--forest);
+}
+.bulk-duplicate-actions > p {
+  margin: 6px 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+.bulk-duplicate-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .review-note {
   display: flex;
   gap: 10px;
@@ -1734,6 +1765,22 @@ tbody tr:last-child td {
 .import-error span {
   color: #765f5b;
   font-size: 9px;
+  line-height: 1.55;
+}
+.import-warning {
+  margin: 16px 0;
+  padding: 14px 16px;
+  border: 1px solid #e6d2a6;
+  border-radius: 8px;
+  background: #fff8e8;
+  color: #705528;
+}
+.import-warning strong {
+  font-size: 13px;
+}
+.import-warning p {
+  margin: 5px 0 0;
+  font-size: 12px;
   line-height: 1.55;
 }
 .loading {

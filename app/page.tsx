@@ -130,6 +130,34 @@ function transactionsInRange(transactions: Transaction[], data: Dashboard) {
   );
 }
 
+type DuplicateGroup = {
+  key: string;
+  transactions: Transaction[];
+};
+
+function findCrossAccountDuplicates(
+  transactions: Transaction[],
+): DuplicateGroup[] {
+  const grouped = transactions.reduce<Map<string, Transaction[]>>(
+    (result, transaction) => {
+      const description = transaction.raw_description
+        .trim()
+        .replace(/\s+/g, " ")
+        .toUpperCase();
+      const key = `${transaction.transaction_date}|${transaction.amount.toFixed(2)}|${description}`;
+      result.set(key, [...(result.get(key) || []), transaction]);
+      return result;
+    },
+    new Map(),
+  );
+  return [...grouped.entries()]
+    .filter(
+      ([, rows]) =>
+        new Set(rows.map((transaction) => transaction.account_id)).size > 1,
+    )
+    .map(([key, rows]) => ({ key, transactions: rows }));
+}
+
 function HomePage({
   accounts,
   transactions,
@@ -1127,24 +1155,184 @@ function MonthlyReportPage({
 
 function ReviewPage({
   rows,
+  accounts,
   onReview,
+  onResolveDuplicates,
 }: {
   rows: Transaction[];
+  accounts: Account[];
   onReview: (tx: Transaction, classification: string, category: string) => void;
+  onResolveDuplicates: (
+    transactions: Transaction[],
+    keepAccountId: number,
+  ) => Promise<void>;
 }) {
   const uncertain = rows.filter(
-    (tx) => tx.classification === "UNKNOWN" || tx.confidence < 0.6,
+    (tx) =>
+      !tx.manually_reviewed &&
+      (tx.classification === "UNKNOWN" || tx.confidence < 0.6),
   );
-  const [active, setActive] = useState<Transaction | null>(
-    uncertain[0] || null,
+  const duplicateGroups = findCrossAccountDuplicates(rows);
+  const [activeId, setActiveId] = useState<number | null>(
+    uncertain[0]?.id || null,
   );
-  const choices = [
-    ["Housing", "EXPENSE"],
-    ["Dining", "EXPENSE"],
-    ["Transfer", "TRANSFER"],
-    ["Reimbursement", "REIMBURSEMENT"],
-    ["Other", "UNKNOWN"],
-  ];
+  const [activeDuplicateKey, setActiveDuplicateKey] = useState<string | null>(
+    duplicateGroups[0]?.key || null,
+  );
+  const [duplicateError, setDuplicateError] = useState("");
+  const [resolvingDuplicates, setResolvingDuplicates] = useState(false);
+  const active =
+    uncertain.find((tx) => tx.id === activeId) || uncertain[0] || null;
+  const activeDuplicate =
+    duplicateGroups.find((group) => group.key === activeDuplicateKey) ||
+    duplicateGroups[0] ||
+    null;
+  const choices = active
+    ? active.amount > 0
+      ? [
+          ["Income", "INCOME", "Other Income"],
+          ["Reimbursement", "REIMBURSEMENT", "Reimbursement"],
+          ["Refund", "REFUND", "Refund"],
+          ["Transfer", "TRANSFER", "Internal Transfer"],
+          ["Other income", "INCOME", "Other Income"],
+        ]
+      : [
+          ["Housing", "EXPENSE", "Housing"],
+          ["Dining", "EXPENSE", "Dining"],
+          ["Transfer", "TRANSFER", "Internal Transfer"],
+          ["Saving", "SAVING", "Savings Transfer"],
+          ["Investment", "INVESTMENT", "Investment Contribution"],
+          ["Other expense", "EXPENSE", "Miscellaneous"],
+        ]
+    : [];
+  if (activeDuplicate) {
+    const accountIds = [
+      ...new Set(
+        activeDuplicate.transactions.map(
+          (transaction) => transaction.account_id,
+        ),
+      ),
+    ];
+    const sample = activeDuplicate.transactions[0];
+    const bulkOptions = accounts
+      .map((account) => ({
+        account,
+        groups: duplicateGroups.filter((group) =>
+          group.transactions.some(
+            (transaction) => transaction.account_id === account.id,
+          ),
+        ),
+      }))
+      .filter((option) => option.groups.length > 1);
+    async function keepGroups(groups: DuplicateGroup[], accountId: number) {
+      setResolvingDuplicates(true);
+      setDuplicateError("");
+      try {
+        await onResolveDuplicates(
+          groups.flatMap((group) => group.transactions),
+          accountId,
+        );
+        setActiveDuplicateKey(null);
+      } catch {
+        setDuplicateError("Could not resolve these duplicates. Try again.");
+      } finally {
+        setResolvingDuplicates(false);
+      }
+    }
+    return (
+      <>
+        <PageHeader
+          eyebrow="Duplicate check"
+          title="Choose where this transaction belongs."
+          description="These are exact matches across different accounts. Ember preserves matching rows in the account you choose and removes only the cross-account copies."
+        />
+        <div className="review-layout">
+          <Card className="review-list">
+            <div className="review-count">
+              {duplicateGroups.length} duplicate groups
+            </div>
+            {duplicateGroups.map((group) => (
+              <button
+                className={activeDuplicate.key === group.key ? "active" : ""}
+                key={group.key}
+                onClick={() => setActiveDuplicateKey(group.key)}
+              >
+                <div className="merchant-icon">
+                  {group.transactions[0].normalized_merchant.charAt(0)}
+                </div>
+                <div>
+                  <strong>{group.transactions[0].normalized_merchant}</strong>
+                  <small>{group.transactions[0].transaction_date}</small>
+                </div>
+                <b>{group.transactions.length} copies</b>
+              </button>
+            ))}
+          </Card>
+          <Card className="review-card">
+            <span className="badge warm">EXACT CROSS-ACCOUNT MATCH</span>
+            <div className="review-merchant">
+              <div className="merchant-icon large">
+                {sample.normalized_merchant.charAt(0)}
+              </div>
+              <div>
+                <h2>{sample.normalized_merchant}</h2>
+                <p>{sample.raw_description}</p>
+              </div>
+              <strong>
+                {sample.amount > 0 ? "+" : "−"}
+                {money(Math.abs(sample.amount))}
+              </strong>
+            </div>
+            <div className="review-question duplicate-question">
+              <span>Which account should keep it?</span>
+              <div>
+                {accountIds.map((accountId) => (
+                  <button
+                    disabled={resolvingDuplicates}
+                    key={accountId}
+                    onClick={() => keepGroups([activeDuplicate], accountId)}
+                  >
+                    Keep in{" "}
+                    {accounts.find((account) => account.id === accountId)
+                      ?.name || "this account"}
+                  </button>
+                ))}
+              </div>
+              {duplicateError && <p className="form-error">{duplicateError}</p>}
+            </div>
+            {bulkOptions.length > 0 && (
+              <div className="bulk-duplicate-actions">
+                <span>Imported a whole statement into the wrong account?</span>
+                <p>
+                  Resolve every exact cross-account match for one account at
+                  once. Transactions unique to either account are untouched.
+                </p>
+                <div>
+                  {bulkOptions.map(({ account, groups }) => (
+                    <button
+                      className="secondary"
+                      disabled={resolvingDuplicates}
+                      key={account.id}
+                      onClick={() => keepGroups(groups, account.id)}
+                    >
+                      Keep {groups.length} matches in {account.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            <div className="review-note">
+              <Sparkles size={18} />
+              <p>
+                Repeated purchases inside the account you keep are preserved.
+                Only matching copies assigned to another account are removed.
+              </p>
+            </div>
+          </Card>
+        </div>
+      </>
+    );
+  }
   if (!active)
     return (
       <>
@@ -1179,7 +1367,7 @@ function ReviewPage({
             <button
               className={active.id === tx.id ? "active" : ""}
               key={tx.id}
-              onClick={() => setActive(tx)}
+              onClick={() => setActiveId(tx.id)}
             >
               <div className="merchant-icon">
                 {tx.normalized_merchant.charAt(0)}
@@ -1215,21 +1403,15 @@ function ReviewPage({
           <div className="review-question">
             <span>What was this?</span>
             <div>
-              {choices.map(([category, classification]) => (
+              {choices.map(([label, classification, category]) => (
                 <button
-                  key={category}
+                  key={label}
                   onClick={() => {
-                    onReview(
-                      active,
-                      classification,
-                      category === "Other" ? "Miscellaneous" : category,
-                    );
-                    setActive(
-                      uncertain.find((x) => x.id !== active.id) || null,
-                    );
+                    onReview(active, classification, category);
+                    setActiveId(null);
                   }}
                 >
-                  {category}
+                  {label}
                 </button>
               ))}
             </div>
@@ -1237,9 +1419,9 @@ function ReviewPage({
           <div className="review-note">
             <Sparkles size={18} />
             <p>
-              <strong>You stay in control.</strong> After saving, you can
-              optionally apply your choice to similar descriptions.
-              Person-to-person payments are never learned automatically.
+              <strong>You stay in control.</strong> Ember learns this merchant
+              for future imports and updates matching unreviewed transactions
+              now. Person-to-person payments are never learned automatically.
             </p>
           </div>
         </Card>
@@ -1803,6 +1985,19 @@ function ImportPage({
               ))}
             </div>
           )}
+          {!!preview.cross_account_duplicates && !preview.committedDone && (
+            <div className="import-warning" role="status">
+              <strong>Possible wrong-account duplicate</strong>
+              <p>
+                {preview.cross_account_duplicates} row
+                {preview.cross_account_duplicates === 1 ? "" : "s"} exactly
+                match transactions already stored in another account. Confirm
+                the selected account before importing. If this corrects an
+                earlier mistake, import it and choose the account to keep under
+                Review.
+              </p>
+            </div>
+          )}
           {preview.preview?.length > 0 && (
             <div className="mini-preview detailed">
               <div className="preview-header">
@@ -2350,7 +2545,6 @@ function TransactionDrawer({
       normalized_merchant: merchant,
       manually_reviewed: true,
       create_rule: rule,
-      rule_pattern: rule ? tx.raw_description : undefined,
     };
     try {
       const response = await fetch(`${API}/transactions/${tx.id}`, {
@@ -2512,6 +2706,7 @@ export default function FinanceDashboard() {
       rows.map((row) => (row.id === tx.id ? updated : row)),
     );
     try {
+      const shouldLearn = !/ZELLE|VENMO|CASH\s*APP/i.test(tx.raw_description);
       await fetch(`${API}/transactions/${tx.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
@@ -2519,12 +2714,30 @@ export default function FinanceDashboard() {
           classification,
           category,
           manually_reviewed: true,
+          create_rule: shouldLearn,
         }),
       });
       await refresh();
     } catch {
       await refresh();
     }
+  }
+  async function resolveDuplicateGroup(
+    duplicateTransactions: Transaction[],
+    keepAccountId: number,
+  ) {
+    const response = await fetch(`${API}/duplicates/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        transaction_ids: duplicateTransactions.map(
+          (transaction) => transaction.id,
+        ),
+        keep_account_id: keepAccountId,
+      }),
+    });
+    if (!response.ok) throw new Error("Could not resolve duplicates");
+    await refresh();
   }
   let content: ReactNode;
   if (!loaded) content = <Loading />;
@@ -2571,7 +2784,14 @@ export default function FinanceDashboard() {
       />
     );
   else if (page === "Review")
-    content = <ReviewPage rows={transactions} onReview={saveReviewDecision} />;
+    content = (
+      <ReviewPage
+        rows={transactions}
+        accounts={accounts}
+        onReview={saveReviewDecision}
+        onResolveDuplicates={resolveDuplicateGroup}
+      />
+    );
   else if (page === "Compare")
     content = <ComparePage transactions={transactions} onFilter={filterTo} />;
   else if (page === "Monthly Report")
