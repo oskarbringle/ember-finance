@@ -30,6 +30,7 @@ MONTHS = {
     )
 }
 MONTHS.update({name[:3]: number for name, number in list(MONTHS.items())})
+KNOWN_REFERENCE_SHEETS = {"categories"}
 
 
 def normalized(value: Any) -> str:
@@ -57,6 +58,12 @@ def parse_date(value: Any) -> date:
     if isinstance(value, date):
         return value
     text = str(value or "").strip()
+    embedded_date = re.search(
+        r"(?:\d{1,2}/\d{1,2}/(?:\d{4}|\d{2})\b|[A-Za-z]+\s+\d{1,2},\s+\d{4})",
+        text,
+    )
+    if embedded_date:
+        text = embedded_date.group(0)
     for format_string in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%B %d, %Y"):
         try:
             return datetime.strptime(text, format_string).date()
@@ -136,18 +143,18 @@ class ParsedWorkbook:
 
 HEADER_SCHEMAS = {
     "income": {
-        "amount": {"amount", "income amount"},
+        "amount": {"amount", "income", "income amount"},
         "description": {"description", "type", "description type", "income type"},
         "income_class": {"income class", "class"},
     },
     "expenses": {
-        "amount": {"amount", "expense amount"},
+        "amount": {"amount", "expense", "expenses", "expense amount"},
         "description": {"description", "type", "description type", "expense type"},
         "category": {"category", "expense category"},
         "expense_tag": {"expense tag", "tag", "tags"},
     },
     "wealth_flows": {
-        "amount": {"amount", "flow amount"},
+        "amount": {"amount", "wealth flow", "flow amount"},
         "destination": {"destination", "account", "flow destination"},
         "flow_class": {"flow class", "class", "wealth flow class"},
     },
@@ -197,16 +204,20 @@ def _find_headers(sheet) -> list[tuple[str, int, dict[str, int]]]:
             for column in range(1, sheet.max_column + 1)
         }
         for start in range(1, sheet.max_column + 1):
-            if values[start] not in {"amount", "income amount", "expense amount", "flow amount"}:
-                continue
             window = range(start, min(sheet.max_column, start + 6) + 1)
             for section, aliases in HEADER_SCHEMAS.items():
-                mapping = {
-                    field_name: column
-                    for field_name, names in aliases.items()
-                    for column in window
-                    if values[column] in names
-                }
+                if values[start] not in aliases["amount"]:
+                    continue
+                mapping = {"amount": start}
+                for field_name, names in aliases.items():
+                    if field_name == "amount":
+                        continue
+                    match = next(
+                        (column for column in window if values[column] in names),
+                        None,
+                    )
+                    if match:
+                        mapping[field_name] = match
                 if REQUIRED_FIELDS[section].issubset(mapping):
                     candidate = (section, row_number, mapping)
                     if candidate not in found:
@@ -214,20 +225,39 @@ def _find_headers(sheet) -> list[tuple[str, int, dict[str, int]]]:
     return found
 
 
-def _read_section(sheet, section: str, header_row: int, columns: dict[str, int], month: str, parsed: ParsedWorkbook) -> None:
-    blank_rows = 0
-    for row_number in range(header_row + 1, sheet.max_row + 1):
+def _read_section(
+    sheet,
+    section: str,
+    header_row: int,
+    columns: dict[str, int],
+    month: str,
+    parsed: ParsedWorkbook,
+) -> None:
+    primary_fields = {
+        "income": ("amount", "description"),
+        "expenses": ("amount", "description"),
+        "wealth_flows": ("amount", "destination"),
+    }[section]
+    primary_columns = tuple(columns[field_name] for field_name in primary_fields)
+    last_data_row = max(
+        (
+            row_number
+            for row_number in range(header_row + 1, sheet.max_row + 1)
+            if any(
+                sheet.cell(row_number, column).value not in (None, "")
+                for column in primary_columns
+            )
+        ),
+        default=header_row,
+    )
+    for row_number in range(header_row + 1, last_data_row + 1):
         values = {
             field_name: sheet.cell(row_number, column).value
             for field_name, column in columns.items()
         }
-        if not any(value not in (None, "") for value in values.values()):
-            blank_rows += 1
-            if blank_rows >= 2:
-                break
+        if not any(values.get(field_name) not in (None, "") for field_name in primary_fields):
             continue
-        blank_rows = 0
-        if normalized(values.get("amount")) in {"amount", "income amount", "expense amount", "flow amount"}:
+        if normalized(values.get("amount")) in HEADER_SCHEMAS[section]["amount"]:
             break
         missing = [
             field_name
@@ -267,6 +297,11 @@ def _read_section(sheet, section: str, header_row: int, columns: dict[str, int],
 def _shared_snapshot_date(sheet) -> date | None:
     for row in sheet.iter_rows():
         for cell in row:
+            try:
+                if any(token in normalized(cell.value) for token in ("snapshot date", "as of")):
+                    return parse_date(cell.value)
+            except ValueError:
+                pass
             if normalized(cell.value) not in {"snapshot date", "as of", "date"}:
                 continue
             for candidate in (
@@ -281,8 +316,76 @@ def _shared_snapshot_date(sheet) -> date | None:
     return None
 
 
+def _investment_account_type(account: str) -> str:
+    account_name = normalized(account)
+    if "roth" in account_name:
+        return "Roth IRA"
+    if "hsa" in account_name:
+        return "HSA"
+    if "401" in account_name:
+        return "401(k)"
+    return "Taxable Brokerage"
+
+
+def _read_net_worth_blocks(sheet, parsed: ParsedWorkbook, snapshot_date: date | None) -> bool:
+    headers = {
+        normalized(sheet.cell(1, column).value): column
+        for column in range(1, sheet.max_column + 1)
+    }
+    if "savings" not in headers or "investments" not in headers:
+        return False
+    if not snapshot_date:
+        parsed.issues.append(
+            ImportIssue(sheet.title, 1, "Networth tab needs an 'as of' date")
+        )
+        return True
+    for account_column, fixed_type in (
+        (headers["savings"], "Cash"),
+        (headers["investments"], None),
+    ):
+        value_column = account_column + 1
+        for row_number in range(2, sheet.max_row + 1):
+            account = sheet.cell(row_number, account_column).value
+            value = sheet.cell(row_number, value_column).value
+            if account in (None, "") and value in (None, ""):
+                continue
+            if normalized(account).startswith("total"):
+                break
+            if account in (None, "") or value in (None, ""):
+                parsed.issues.append(
+                    ImportIssue(
+                        sheet.title,
+                        row_number,
+                        "Net-worth row needs an account and value",
+                    )
+                )
+                continue
+            try:
+                account_name = str(account).strip()
+                account_type = fixed_type or _investment_account_type(account_name)
+                parsed.net_worth.append(
+                    ParsedNetWorth(
+                        snapshot_date,
+                        account_name,
+                        account_type,
+                        parse_amount(value),
+                    )
+                )
+            except (TypeError, ValueError) as exc:
+                parsed.issues.append(
+                    ImportIssue(
+                        sheet.title,
+                        row_number,
+                        f"Invalid net-worth row: {exc}",
+                    )
+                )
+    return True
+
+
 def _read_net_worth(sheet, parsed: ParsedWorkbook) -> None:
     shared_date = _shared_snapshot_date(sheet)
+    if _read_net_worth_blocks(sheet, parsed, shared_date):
+        return
     for row_number in range(1, sheet.max_row + 1):
         values = {
             column: normalized(sheet.cell(row_number, column).value)
@@ -363,7 +466,9 @@ def parse_workbook(content: bytes, filename: str) -> ParsedWorkbook:
     ignored = [
         title
         for title in workbook.sheetnames
-        if title not in month_keys and (not net_worth_sheet or title != net_worth_sheet.title)
+        if title not in month_keys
+        and (not net_worth_sheet or title != net_worth_sheet.title)
+        and normalized(title) not in KNOWN_REFERENCE_SHEETS
     ]
     for title in ignored:
         parsed.issues.append(ImportIssue(title, None, "Sheet was not recognized and was not imported", "warning"))

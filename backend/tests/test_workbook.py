@@ -16,7 +16,7 @@ def test_workbook_parser_detects_month_tabs_and_all_sections():
     assert len(parsed.income) == 4
     assert len(parsed.expenses) == 10
     assert len(parsed.wealth_flows) == 6
-    assert len(parsed.net_worth) == 5
+    assert len(parsed.net_worth) == 6
     assert parsed.preview("test")["can_import"] is True
 
 
@@ -78,17 +78,21 @@ def test_reimport_replaces_monthly_data_and_deduplicates_net_worth():
         first = replace_import("first", ImportCommit(), db)
         PREVIEWS["second"] = parsed
         second = replace_import("second", ImportCommit(), db)
-        assert first["net_worth_snapshots_added"] == 5
+        assert first["net_worth_snapshots_added"] == 6
         assert second["net_worth_snapshots_added"] == 0
         assert db.scalar(select(func.count(IncomeEntry.id))) == 4
         assert db.scalar(select(func.count(ExpenseEntry.id))) == 10
         assert db.scalar(select(func.count(WealthFlowEntry.id))) == 6
-        assert db.scalar(select(func.count(NetWorthSnapshot.id))) == 5
+        assert db.scalar(select(func.count(NetWorthSnapshot.id))) == 6
 
 
 def test_malformed_rows_have_sheet_row_and_reason():
     parsed = parse_workbook(realistic_workbook(malformed=True), "Broken.xlsx")
-    issue = next(issue for issue in parsed.issues if issue.sheet == "August")
-    assert issue.row == 12
+    issue = next(
+        issue
+        for issue in parsed.issues
+        if issue.sheet == "August" and "category" in issue.message
+    )
+    assert issue.row == 5
     assert "category" in issue.message
     assert parsed.preview("test")["can_import"] is False

@@ -8,13 +8,13 @@ There is no login, telemetry, bank connection, cloud database, or automatic uplo
 
 Use one monthly tab per month. Full month names, abbreviations, and optional years are supported, such as `August`, `Sep`, or `October 2026`. Row counts can vary and future month tabs are detected automatically.
 
-Each monthly tab can contain these tables:
+Each monthly tab can contain these side-by-side tables beginning on row 1:
 
-- Income: `Amount`, `Description / Type`, `Income Class`
-- Expenses: `Amount`, `Description / Type`, `Category`, optional `Expense Tag`
-- Wealth Flow: `Amount`, `Destination`, `Flow Class`
+- Income: `Income`, `Type`, `Income Class`
+- Expenses: `Expense`, `Type`, `Category`, optional `Expense Tag`
+- Wealth Flow: `Wealth Flow`, `Destination`, `Flow Class`
 
-The `Networth` tab uses `Account`, `Account Type`, and `Value`, plus either a `Date` column or a `Snapshot Date` field above the table. Re-importing replaces monthly records; a net-worth snapshot is appended only when its date is newer than the latest saved snapshot.
+The earlier stacked-table format with an `Amount` column remains supported. The `Networth` tab can use side-by-side `Savings` and `Investments` blocks with an “as of” date, or an `Account`, `Account Type`, and `Value` table with a date. Re-importing replaces monthly records; a net-worth snapshot is appended only when its date is newer than the latest saved snapshot.
 
 ## Start locally
 
