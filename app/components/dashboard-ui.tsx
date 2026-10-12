@@ -1,12 +1,12 @@
 "use client";
 
 import type { ElementType, ReactNode } from "react";
-import { ArrowDownLeft } from "lucide-react";
-import { formatCurrency, type Account, type Transaction } from "../lib/finance";
+import { Info } from "lucide-react";
+import { formatCurrency } from "../lib/finance";
 
 export function MiniLogo() {
   return (
-    <div className="brand-mark">
+    <div className="brand-mark" aria-hidden="true">
       <span />
       <span />
       <span />
@@ -16,7 +16,7 @@ export function MiniLogo() {
 
 export function Loading() {
   return (
-    <div className="loading">
+    <div className="loading" aria-label="Loading dashboard">
       <span />
       <span />
       <span />
@@ -27,43 +27,11 @@ export function Loading() {
 export function Card({
   children,
   className = "",
-  onClick,
 }: {
   children: ReactNode;
   className?: string;
-  onClick?: () => void;
 }) {
-  return (
-    <section
-      className={`card ${className} ${onClick ? "clickable" : ""}`}
-      onClick={onClick}
-    >
-      {children}
-    </section>
-  );
-}
-
-export function ChartTip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: { name: string; value: number; color?: string }[];
-  label?: string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="chart-tip">
-      <strong>{label}</strong>
-      {payload.map((item) => (
-        <span key={item.name}>
-          <i style={{ background: item.color }} />
-          {item.name}: {formatCurrency(item.value, true)}
-        </span>
-      ))}
-    </div>
-  );
+  return <section className={`card ${className}`}>{children}</section>;
 }
 
 export function PageHeader({
@@ -78,122 +46,87 @@ export function PageHeader({
   action?: ReactNode;
 }) {
   return (
-    <div className="page-heading">
+    <header className="page-heading">
       <div>
-        {eyebrow && <div className="eyebrow">{eyebrow}</div>}
+        {eyebrow && <span className="eyebrow">{eyebrow}</span>}
         <h1>{title}</h1>
         <p>{description}</p>
       </div>
       {action}
-    </div>
+    </header>
   );
 }
 
 export function MetricCard({
   label,
   value,
-  delta,
-  tone,
+  detail,
   icon: Icon,
-  onClick,
+  tooltip,
+  accent = false,
 }: {
   label: string;
   value: string;
-  delta: string;
-  tone?: string;
+  detail: string;
   icon: ElementType;
-  onClick: () => void;
+  tooltip?: string;
+  accent?: boolean;
 }) {
   return (
-    <Card className={`metric ${tone || ""}`} onClick={onClick}>
-      <div className="metric-top">
+    <Card className={`metric-card ${accent ? "accent" : ""}`}>
+      <div className="metric-label">
+        <Icon size={15} />
         <span>{label}</span>
-        <div className="metric-icon">
-          <Icon size={17} />
-        </div>
+        {tooltip && <Info size={13} title={tooltip} />}
       </div>
       <strong>{value}</strong>
-      <small>{delta}</small>
+      <small>{detail}</small>
     </Card>
   );
 }
 
-export function TransactionTable({
-  rows,
-  accounts,
-  onSelect,
+export function ChartTooltip({
+  active,
+  payload,
+  label,
+  percent = false,
 }: {
-  rows: Transaction[];
-  accounts: Account[];
-  onSelect: (row: Transaction) => void;
+  active?: boolean;
+  payload?: { name: string; value: number; color?: string }[];
+  label?: string;
+  percent?: boolean;
 }) {
-  const accountMap = new Map(accounts.map((account) => [account.id, account]));
+  if (!active || !payload?.length) return null;
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Merchant</th>
-            <th>Account</th>
-            <th>Category</th>
-            <th>Classification</th>
-            <th>Date</th>
-            <th className="align-right">Amount</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((transaction) => (
-            <tr key={transaction.id} onClick={() => onSelect(transaction)}>
-              <td>
-                <div className="merchant-cell">
-                  <div
-                    className={`merchant-icon ${transaction.amount > 0 ? "in" : ""}`}
-                  >
-                    {transaction.amount > 0 ? (
-                      <ArrowDownLeft size={16} />
-                    ) : (
-                      transaction.normalized_merchant.charAt(0)
-                    )}
-                  </div>
-                  <div>
-                    <strong>{transaction.normalized_merchant}</strong>
-                    <small>{transaction.raw_description}</small>
-                  </div>
-                </div>
-              </td>
-              <td>
-                {accountMap.get(transaction.account_id)?.name ||
-                  `Account ${transaction.account_id}`}
-              </td>
-              <td>
-                <span className="category-dot" />
-                {transaction.category}
-              </td>
-              <td>
-                <span
-                  className={`pill ${transaction.classification.toLowerCase()}`}
-                >
-                  {transaction.classification.replaceAll("_", " ")}
-                </span>
-              </td>
-              <td>
-                {new Date(
-                  `${transaction.transaction_date}T12:00:00`,
-                ).toLocaleDateString("en-US", {
-                  month: "short",
-                  day: "numeric",
-                })}
-              </td>
-              <td
-                className={`align-right amount ${transaction.amount > 0 ? "positive" : ""}`}
-              >
-                {transaction.amount > 0 ? "+" : "−"}
-                {formatCurrency(Math.abs(transaction.amount))}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="chart-tooltip">
+      {label && <strong>{label}</strong>}
+      {payload.map((item) => (
+        <span key={item.name}>
+          <i style={{ background: item.color }} />
+          {item.name}:{" "}
+          {percent ? `${item.value.toFixed(1)}%` : formatCurrency(item.value)}
+        </span>
+      ))}
     </div>
+  );
+}
+
+export function EmptyState({ onImport }: { onImport: () => void }) {
+  return (
+    <Card className="empty-state">
+      <div className="empty-visual">
+        <span />
+        <span />
+        <span />
+      </div>
+      <h2>Your spreadsheet is the starting point.</h2>
+      <p>
+        Import your budgeting workbook to turn monthly entries into clear
+        trends, comparisons, and net-worth history.
+      </p>
+      <button className="primary-button" onClick={onImport}>
+        Import budgeting workbook
+      </button>
+    </Card>
   );
 }

@@ -1,632 +1,356 @@
 from __future__ import annotations
 
-import csv
-import io
-import json
-import re
-import shutil
-import uuid
 from contextlib import asynccontextmanager
-from datetime import date
-from pathlib import Path
+from datetime import UTC, datetime
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .analytics import current_net_worth, dashboard_payload, date_bounds, financial_totals
-from .classification import clean_description, classify_transaction, transaction_fingerprint
-from .database import Base, DATABASE_PATH, engine, get_db
-from .models import Account, BalanceSnapshot, Budget, Category, Classification, ImportBatch, Rule, Setting, Transaction
-from .parsers import GenericCsvParser, PdfStatementParser
-from .sample_data import initialize_reference_data
-from .schemas import (
-    AccountCreate,
-    AccountRead,
-    BudgetUpsert,
-    DuplicateResolution,
-    RuleCreate,
-    SnapshotCreate,
-    TransactionRead,
-    TransactionUpdate,
+from .analytics import (
+    aggregate_metrics,
+    calculate_month_metrics,
+    category_totals,
+    net_worth_group,
+    net_worth_series,
+    normalized,
 )
+from .database import Base, DATABASE_PATH, engine, get_db
+from .models import (
+    ExpenseEntry,
+    IncomeEntry,
+    NetWorthSnapshot,
+    WealthFlowEntry,
+    WorkbookState,
+)
+from .schemas import ImportCommit
+from .workbook import ParsedWorkbook, parse_workbook
+
+
+PREVIEWS: dict[str, ParsedWorkbook] = {}
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(engine)
-    with Session(engine) as db:
-        initialize_reference_data(db)
-        refunds = db.scalars(select(Transaction).where(Transaction.classification == Classification.REFUND, Transaction.category == "Refund")).all()
-        for refund in refunds:
-            original = db.scalar(
-                select(Transaction)
-                .where(
-                    Transaction.normalized_merchant == refund.normalized_merchant,
-                    Transaction.classification == Classification.EXPENSE,
-                    Transaction.transaction_date <= refund.transaction_date,
-                )
-                .order_by(Transaction.transaction_date.desc())
-            )
-            if original:
-                refund.category = original.category
-        _reclassify_automatic_transactions(db)
-        db.commit()
     yield
 
 
-app = FastAPI(title="Ember Finance API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Ember Finance", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+def _available_months(
+    incomes: list[IncomeEntry],
+    expenses: list[ExpenseEntry],
+    flows: list[WealthFlowEntry],
+) -> list[str]:
+    return sorted({row.month for row in [*incomes, *expenses, *flows]})
+
+
+def _selected_months(
+    available: list[str],
+    period: str,
+    start_month: str | None,
+    end_month: str | None,
+) -> list[str]:
+    if not available:
+        return []
+    if period == "this_month":
+        return available[-1:]
+    if period == "last_month":
+        return available[-2:-1] or available[-1:]
+    if period == "last_3_months":
+        return available[-3:]
+    if period == "custom":
+        if not start_month or not end_month:
+            raise HTTPException(400, "Custom range needs a start and end month")
+        if start_month > end_month:
+            raise HTTPException(400, "Custom range start must be before its end")
+        return [month for month in available if start_month <= month <= end_month]
+    return available
+
+
+def _expense_dict(row: ExpenseEntry) -> dict:
+    return {
+        "id": row.id,
+        "month": row.month,
+        "amount": round(row.amount, 2),
+        "description": row.description,
+        "category": row.category,
+        "expense_tag": row.expense_tag,
+    }
+
+
+def _income_dict(row: IncomeEntry) -> dict:
+    return {
+        "id": row.id,
+        "month": row.month,
+        "amount": round(row.amount, 2),
+        "description": row.description,
+        "income_class": row.income_class,
+    }
+
+
+def _flow_dict(row: WealthFlowEntry) -> dict:
+    return {
+        "id": row.id,
+        "month": row.month,
+        "amount": round(row.amount, 2),
+        "destination": row.destination,
+        "flow_class": row.flow_class,
+    }
+
+
+def _insights(monthly: list[dict], expenses: list[ExpenseEntry]) -> list[str]:
+    if not monthly:
+        return []
+    latest = monthly[-1]
+    prior = monthly[-2] if len(monthly) > 1 else None
+    latest_expenses = [row for row in expenses if row.month == latest["month"]]
+    categories = category_totals(latest_expenses)
+    insights: list[str] = []
+    if categories:
+        names = ", ".join(row["category"] for row in categories[:3])
+        insights.append(f"Your largest categories this month are {names}.")
+    insights.append(
+        f"You added approximately ${latest['monthly_wealth_added']:,.0f} of new wealth this month."
+    )
+    irregular = sum(
+        row.amount
+        for row in latest_expenses
+        if normalized(row.expense_tag) in {"one-time", "personal travel"}
+    )
+    if irregular:
+        insights.append(
+            f"${irregular:,.0f} of this month's spending was one-time or travel-related."
+        )
+    if prior:
+        change = latest["wealth_building_rate"] - prior["wealth_building_rate"]
+        direction = "increased" if change >= 0 else "decreased"
+        insights.append(
+            f"Your wealth-building rate {direction} from {prior['wealth_building_rate']:.1f}% to {latest['wealth_building_rate']:.1f}%."
+        )
+        current_categories = {row["category"]: row["value"] for row in categories}
+        prior_categories = {
+            row["category"]: row["value"]
+            for row in category_totals(
+                row for row in expenses if row.month == prior["month"]
+            )
+        }
+        comparable = [
+            (category, value, prior_categories.get(category, 0))
+            for category, value in current_categories.items()
+            if prior_categories.get(category, 0) > 0
+        ]
+        if comparable:
+            category, current, before = max(
+                comparable, key=lambda item: abs(item[1] - item[2])
+            )
+            percent = abs(current - before) / before * 100
+            direction = "higher" if current >= before else "lower"
+            insights.append(
+                f"{category} spending is {percent:.0f}% {direction} than last month."
+            )
+    return insights[:5]
+
+
 @app.get("/api/health")
-def health() -> dict:
+def health():
     return {"status": "ok", "database": str(DATABASE_PATH)}
 
 
-@app.get("/api/accounts", response_model=list[AccountRead])
-def list_accounts(db: Session = Depends(get_db)):
-    return db.scalars(select(Account).order_by(Account.active.desc(), Account.name)).all()
-
-
-@app.post("/api/accounts", response_model=AccountRead)
-def create_account(payload: AccountCreate, db: Session = Depends(get_db)):
-    values = payload.model_dump(exclude={"save_snapshot"})
-    account = Account(**values)
-    db.add(account)
-    db.flush()
-    if payload.save_snapshot and payload.balance_mode == "MANUAL":
-        db.add(BalanceSnapshot(account_id=account.id, balance=account.current_balance))
-    db.commit()
-    db.refresh(account)
-    return account
-
-
-@app.patch("/api/accounts/{account_id}", response_model=AccountRead)
-def update_account(account_id: int, payload: AccountCreate, db: Session = Depends(get_db)):
-    account = db.get(Account, account_id)
-    if not account:
-        raise HTTPException(404, "Account not found")
-    old_balance = account.current_balance
-    for field, value in payload.model_dump(exclude={"save_snapshot"}).items():
-        setattr(account, field, value)
-    if payload.save_snapshot and old_balance != account.current_balance:
-        existing = db.scalar(select(BalanceSnapshot).where(BalanceSnapshot.account_id == account.id, BalanceSnapshot.snapshot_date == date.today()))
-        if existing:
-            existing.balance = account.current_balance
-        else:
-            db.add(BalanceSnapshot(account_id=account.id, balance=account.current_balance))
-    db.commit()
-    db.refresh(account)
-    return account
-
-
-@app.post("/api/accounts/{account_id}/snapshots")
-def create_snapshot(account_id: int, payload: SnapshotCreate, db: Session = Depends(get_db)):
-    account = db.get(Account, account_id)
-    if not account:
-        raise HTTPException(404, "Account not found")
-    account.current_balance = payload.balance
-    snapshot = db.scalar(select(BalanceSnapshot).where(BalanceSnapshot.account_id == account_id, BalanceSnapshot.snapshot_date == payload.snapshot_date))
-    if snapshot:
-        snapshot.balance = payload.balance
-    else:
-        snapshot = BalanceSnapshot(account_id=account_id, **payload.model_dump())
-        db.add(snapshot)
-    db.commit()
-    return {"status": "saved", "balance": payload.balance, "date": payload.snapshot_date}
-
-
-@app.get("/api/transactions", response_model=list[TransactionRead])
-def list_transactions(
-    account_id: int | None = None,
-    category: str | None = None,
-    merchant: str | None = None,
-    classification: str | None = None,
-    start: date | None = None,
-    end: date | None = None,
-    limit: int = 500,
+@app.get("/api/dashboard")
+def dashboard(
+    period: str = Query("this_month"),
+    start_month: str | None = None,
+    end_month: str | None = None,
+    include_work_reimbursable: bool = False,
+    include_one_time: bool = True,
+    include_personal_travel: bool = True,
     db: Session = Depends(get_db),
 ):
-    query = select(Transaction)
-    if account_id:
-        query = query.where(Transaction.account_id == account_id)
-    if category:
-        query = query.where(Transaction.category == category)
-    if merchant:
-        query = query.where(Transaction.normalized_merchant.ilike(f"%{merchant}%"))
-    if classification:
-        query = query.where(Transaction.classification == classification)
-    if start:
-        query = query.where(Transaction.transaction_date >= start)
-    if end:
-        query = query.where(Transaction.transaction_date <= end)
-    return db.scalars(query.order_by(Transaction.transaction_date.desc(), Transaction.id.desc()).limit(min(limit, 2000))).all()
-
-
-@app.patch("/api/transactions/{transaction_id}", response_model=TransactionRead)
-def update_transaction(transaction_id: int, payload: TransactionUpdate, db: Session = Depends(get_db)):
-    transaction = db.get(Transaction, transaction_id)
-    if not transaction:
-        raise HTTPException(404, "Transaction not found")
-    for field, value in payload.model_dump(exclude={"create_rule", "rule_pattern"}, exclude_none=True).items():
-        setattr(transaction, field, value)
-    transaction.confidence = 1.0
-    if payload.create_rule:
-        pattern = payload.rule_pattern or re.escape(transaction.normalized_merchant.upper())
-        try:
-            compiled = re.compile(pattern, re.IGNORECASE)
-        except re.error as exc:
-            raise HTTPException(400, "Learning pattern is not valid") from exc
-        existing_rule = db.scalar(
-            select(Rule).where(
-                Rule.pattern == pattern,
-                Rule.classification == transaction.classification,
-                Rule.category == transaction.category,
-            )
-        )
-        if existing_rule:
-            existing_rule.active = True
-            existing_rule.priority = 200
-        else:
-            db.add(
-                Rule(
-                    name=f"Rule for {transaction.normalized_merchant}",
-                    pattern=pattern,
-                    merchant=transaction.normalized_merchant,
-                    category=transaction.category,
-                    classification=transaction.classification,
-                    priority=200,
-                    user_created=True,
-                )
-            )
-        candidates = db.scalars(
-            select(Transaction).where(
-                Transaction.id != transaction.id,
-                Transaction.manually_reviewed.is_(False),
-            )
-        ).all()
-        for candidate in candidates:
-            same_direction = (candidate.amount > 0) == (transaction.amount > 0)
-            if same_direction and compiled.search(
-                clean_description(candidate.raw_description)
-            ):
-                candidate.normalized_merchant = transaction.normalized_merchant
-                candidate.category = transaction.category
-                candidate.classification = transaction.classification
-                candidate.confidence = 0.99
-    db.commit()
-    db.refresh(transaction)
-    return transaction
-
-
-@app.get("/api/review", response_model=list[TransactionRead])
-def review_queue(db: Session = Depends(get_db)):
-    return db.scalars(
-        select(Transaction)
-        .where((Transaction.classification == Classification.UNKNOWN) | (Transaction.confidence < 0.6), Transaction.manually_reviewed.is_(False))
-        .order_by(Transaction.transaction_date.desc())
-    ).all()
-
-
-def _user_rules(db: Session) -> list[dict]:
-    return [
-        {"pattern": rule.pattern, "merchant": rule.merchant, "category": rule.category,
-         "classification": rule.classification, "priority": rule.priority, "active": rule.active}
-        for rule in db.scalars(select(Rule).where(Rule.active.is_(True)))
+    incomes = list(db.scalars(select(IncomeEntry).order_by(IncomeEntry.month, IncomeEntry.id)))
+    expenses = list(db.scalars(select(ExpenseEntry).order_by(ExpenseEntry.month, ExpenseEntry.id)))
+    flows = list(db.scalars(select(WealthFlowEntry).order_by(WealthFlowEntry.month, WealthFlowEntry.id)))
+    snapshots = list(db.scalars(select(NetWorthSnapshot).order_by(NetWorthSnapshot.snapshot_date, NetWorthSnapshot.id)))
+    available = _available_months(incomes, expenses, flows)
+    selected = _selected_months(available, period, start_month, end_month)
+    monthly_metrics = [
+        calculate_month_metrics(month, incomes, expenses, flows) for month in available
     ]
-
-
-def _reclassify_automatic_transactions(db: Session) -> None:
-    rules = _user_rules(db)
-    transactions = db.scalars(
-        select(Transaction).where(
-            Transaction.manually_reviewed.is_(False),
-            (Transaction.classification == Classification.UNKNOWN)
-            | (
-                (Transaction.classification == Classification.EXPENSE)
-                & (Transaction.amount > 0)
-            ),
-        )
-    ).all()
-    for transaction in transactions:
-        account = db.get(Account, transaction.account_id)
-        result = classify_transaction(
-            transaction.raw_description,
-            transaction.amount,
-            rules,
-            account.type if account else None,
-        )
-        if result.classification == Classification.UNKNOWN:
-            continue
-        transaction.normalized_merchant = result.merchant
-        transaction.category = result.category
-        transaction.classification = result.classification
-        transaction.confidence = result.confidence
-
-
-def _existing_content_count(
-    db: Session,
-    transaction_date: date,
-    amount: float,
-    description: str,
-) -> int:
-    return _existing_content_counts(db).get(
-        (transaction_date, round(amount, 2), clean_description(description)),
-        0,
-    )
-
-
-def _existing_content_counts(db: Session) -> dict[tuple[date, float, str], int]:
-    counts: dict[tuple[date, float, str], int] = {}
-    for transaction in db.scalars(select(Transaction)):
-        key = (
-            transaction.transaction_date,
-            round(transaction.amount, 2),
-            clean_description(transaction.raw_description),
-        )
-        counts[key] = counts.get(key, 0) + 1
-    return counts
-
-
-def _existing_content_accounts(
-    db: Session,
-) -> dict[tuple[date, float, str], set[int]]:
-    accounts: dict[tuple[date, float, str], set[int]] = {}
-    for transaction in db.scalars(select(Transaction)):
-        key = (
-            transaction.transaction_date,
-            round(transaction.amount, 2),
-            clean_description(transaction.raw_description),
-        )
-        accounts.setdefault(key, set()).add(transaction.account_id)
-    return accounts
+    selected_metrics = [row for row in monthly_metrics if row.month in selected]
+    selected_expenses = [row for row in expenses if row.month in selected]
+    visible_expenses = [
+        row
+        for row in selected_expenses
+        if (include_work_reimbursable or normalized(row.expense_tag) != "work/reimbursable")
+        and (include_one_time or normalized(row.expense_tag) != "one-time")
+        and (include_personal_travel or normalized(row.expense_tag) != "personal travel")
+    ]
+    state = db.get(WorkbookState, 1)
+    net_worth = net_worth_series(snapshots)
+    latest_date = max((row.snapshot_date for row in snapshots), default=None)
+    latest_accounts = [row for row in snapshots if row.snapshot_date == latest_date]
+    composition: dict[str, float] = {}
+    for row in latest_accounts:
+        group = net_worth_group(row.account, row.account_type)
+        composition[group] = composition.get(group, 0) + row.value
+    return {
+        "metadata": {
+            "workbook_name": state.workbook_name if state else None,
+            "imported_at": state.imported_at.isoformat() if state else None,
+            "available_months": available,
+            "selected_months": selected,
+        },
+        "metrics": aggregate_metrics(selected_metrics),
+        "average_core_spending": round(
+            sum(row.core_spending for row in selected_metrics) / len(selected_metrics), 2
+        ) if selected_metrics else 0,
+        "monthly": [row.as_dict() for row in monthly_metrics],
+        "categories": category_totals(visible_expenses),
+        "category_trends": [
+            {
+                "month": month,
+                **{
+                    category: round(
+                        sum(
+                            row.amount
+                            for row in expenses
+                            if row.month == month and row.category == category
+                        ),
+                        2,
+                    )
+                    for category in sorted({row.category for row in expenses})
+                },
+            }
+            for month in available
+        ],
+        "expenses": [_expense_dict(row) for row in visible_expenses],
+        "all_expenses": [_expense_dict(row) for row in selected_expenses],
+        "income": [_income_dict(row) for row in incomes if row.month in selected],
+        "wealth_flows": [_flow_dict(row) for row in flows if row.month in selected],
+        "net_worth": net_worth,
+        "net_worth_accounts": [
+            {
+                "account": row.account,
+                "account_type": row.account_type,
+                "value": round(row.value, 2),
+                "group": net_worth_group(row.account, row.account_type),
+            }
+            for row in latest_accounts
+        ],
+        "net_worth_composition": [
+            {"group": group, "value": round(value, 2)}
+            for group, value in sorted(composition.items(), key=lambda item: item[1], reverse=True)
+        ],
+        "current_net_worth": round(sum(row.value for row in latest_accounts), 2),
+        "insights": _insights([row.as_dict() for row in monthly_metrics], expenses),
+    }
 
 
 @app.post("/api/imports/preview")
-async def preview_import(
-    account_id: int = Form(...),
-    sign_convention: str = Form("auto"),
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    account = db.get(Account, account_id)
-    if not account:
-        raise HTTPException(404, "Account not found")
-    filename = file.filename or "import"
-    suffix = Path(filename).suffix.lower()
-    if suffix not in (".csv", ".pdf"):
-        raise HTTPException(400, "Choose a CSV or PDF statement")
+async def preview_import(file: UploadFile = File(...)):
+    filename = file.filename or "budget.xlsx"
+    if not filename.lower().endswith(".xlsx"):
+        raise HTTPException(400, "Choose an .xlsx budgeting workbook")
     content = await file.read()
     if len(content) > 25 * 1024 * 1024:
-        raise HTTPException(400, "Statements must be smaller than 25 MB")
-    parser = PdfStatementParser() if suffix == ".pdf" else GenericCsvParser()
-    try:
-        parsed = parser.parse(io.BytesIO(content), account_type=account.type, sign_convention=sign_convention)
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise HTTPException(400, str(exc)) from exc
-    rules = _user_rules(db)
-    preview_rows = []
-    duplicates = 0
-    cross_account_duplicates = 0
-    uncertain = 0
-    existing_content_accounts = _existing_content_accounts(db)
-    occurrences: dict[tuple[date, float, str], int] = {}
-    for row in parsed:
-        occurrence_key = (
-            row.transaction_date,
-            round(row.amount, 2),
-            clean_description(row.description),
-        )
-        occurrence = occurrences.get(occurrence_key, 0)
-        occurrences[occurrence_key] = occurrence + 1
-        fingerprint = transaction_fingerprint(
-            account_id,
-            row.transaction_date,
-            row.amount,
-            row.description,
-            occurrence,
-        )
-        if db.scalar(select(Transaction.id).where(Transaction.fingerprint == fingerprint)):
-            duplicates += 1
-            continue
-        if existing_content_accounts.get(occurrence_key, set()) - {account_id}:
-            cross_account_duplicates += 1
-        result = classify_transaction(
-            row.description,
-            row.amount,
-            rules,
-            account.type,
-        )
-        category = result.category
-        if result.classification == Classification.REFUND:
-            original = db.scalar(
-                select(Transaction)
-                .where(
-                    Transaction.normalized_merchant == result.merchant,
-                    Transaction.classification == Classification.EXPENSE,
-                    Transaction.transaction_date <= row.transaction_date,
-                )
-                .order_by(Transaction.transaction_date.desc())
-            )
-            if original:
-                category = original.category
-        uncertain += int(result.classification == Classification.UNKNOWN or result.confidence < 0.6)
-        preview_rows.append({
-            "transaction_date": row.transaction_date.isoformat(),
-            "posted_date": row.posted_date.isoformat() if row.posted_date else None,
-            "raw_description": row.description,
-            "normalized_merchant": result.merchant,
-            "amount": row.amount,
-            "direction": "CREDIT" if row.amount > 0 else "DEBIT",
-            "category": category,
-            "classification": result.classification,
-            "confidence": result.confidence,
-            "fingerprint": fingerprint,
-        })
-    batch_id = uuid.uuid4().hex
-    batch = ImportBatch(
-        id=batch_id, account_id=account_id, source_file=filename,
-        total_rows=len(parsed), duplicate_rows=duplicates, uncertain_rows=uncertain,
-        preview_json=json.dumps(preview_rows),
-    )
-    db.add(batch)
-    db.commit()
-    return {
-        "batch_id": batch_id, "account": account.name, "total_rows": len(parsed),
-        "ready_to_import": len(preview_rows),
-        "duplicates": duplicates,
-        "cross_account_duplicates": cross_account_duplicates,
-        "uncertain": uncertain,
-        "preview": preview_rows[:50],
-        "parser": getattr(parser, "provider", "unknown"),
-        "parse_report": getattr(parser, "last_report", {}),
-    }
+        raise HTTPException(413, "Workbook is larger than the 25 MB local import limit")
+    token = uuid4().hex
+    parsed = parse_workbook(content, filename)
+    PREVIEWS[token] = parsed
+    return parsed.preview(token)
 
 
-@app.post("/api/imports/{batch_id}/commit")
-def commit_import(batch_id: str, db: Session = Depends(get_db)):
-    batch = db.get(ImportBatch, batch_id)
-    if not batch:
-        raise HTTPException(404, "Import preview not found")
-    if batch.status == "COMMITTED":
-        return {"batch_id": batch.id, "committed": batch.committed_rows, "duplicates": batch.duplicate_rows, "status": batch.status}
-    committed = 0
-    duplicates = batch.duplicate_rows
-    for row in json.loads(batch.preview_json):
-        if db.scalar(select(Transaction.id).where(Transaction.fingerprint == row["fingerprint"])):
-            duplicates += 1
-            continue
-        db.add(Transaction(
-            account_id=batch.account_id, transaction_date=date.fromisoformat(row["transaction_date"]),
-            posted_date=date.fromisoformat(row["posted_date"]) if row["posted_date"] else None,
-            raw_description=row["raw_description"], normalized_merchant=row["normalized_merchant"],
-            amount=row["amount"], direction=row["direction"], category=row["category"],
-            classification=row["classification"], confidence=row["confidence"], source_file=batch.source_file,
-            import_batch_id=batch.id, fingerprint=row["fingerprint"],
-        ))
-        committed += 1
-    batch.status = "COMMITTED"
-    batch.committed_rows = committed
-    batch.duplicate_rows = duplicates
-    batch.preview_json = "[]"
-    db.commit()
-    return {"batch_id": batch.id, "committed": committed, "duplicates": duplicates, "uncertain": batch.uncertain_rows, "status": batch.status}
-
-
-@app.post("/api/duplicates/resolve")
-def resolve_duplicates(payload: DuplicateResolution, db: Session = Depends(get_db)):
-    unique_ids = set(payload.transaction_ids)
-    if len(unique_ids) < 2:
-        raise HTTPException(400, "Choose at least two duplicate transactions")
-    transactions: list[Transaction] = []
-    id_list = list(unique_ids)
-    for start in range(0, len(id_list), 500):
-        transactions.extend(
-            db.scalars(
-                select(Transaction).where(
-                    Transaction.id.in_(id_list[start : start + 500])
-                )
-            )
-        )
-    if len(transactions) != len(unique_ids):
-        raise HTTPException(404, "One or more duplicate transactions were not found")
-    if not any(tx.account_id == payload.keep_account_id for tx in transactions):
-        raise HTTPException(400, "The account to keep is not in this duplicate group")
-    grouped: dict[tuple[date, float, str], list[Transaction]] = {}
-    for transaction in transactions:
-        signature = (
-            transaction.transaction_date,
-            round(transaction.amount, 2),
-            clean_description(transaction.raw_description),
-        )
-        grouped.setdefault(signature, []).append(transaction)
-    if any(
-        len(group) < 2
-        or not any(tx.account_id == payload.keep_account_id for tx in group)
-        for group in grouped.values()
-    ):
-        raise HTTPException(400, "Every duplicate group must include the account to keep")
-    removed = 0
-    for transaction in transactions:
-        if transaction.account_id != payload.keep_account_id:
-            db.delete(transaction)
-            removed += 1
-    if not removed:
-        raise HTTPException(400, "No cross-account duplicates were selected")
-    db.commit()
-    return {"removed": removed, "kept_account_id": payload.keep_account_id}
-
-
-@app.get("/api/imports")
-def import_history(db: Session = Depends(get_db)):
-    batches = db.scalars(select(ImportBatch).order_by(ImportBatch.created_at.desc())).all()
-    return [{
-        "id": batch.id, "account_id": batch.account_id, "source_file": batch.source_file,
-        "status": batch.status, "total_rows": batch.total_rows, "duplicate_rows": batch.duplicate_rows,
-        "uncertain_rows": batch.uncertain_rows, "committed_rows": batch.committed_rows, "created_at": batch.created_at,
-    } for batch in batches]
-
-
-@app.get("/api/dashboard")
-def dashboard(period: str = "this_month", start: date | None = None, end: date | None = None, db: Session = Depends(get_db)):
-    boundary = db.get(Setting, "post_job_start_date")
-    post_job_start = date.fromisoformat(boundary.value) if boundary else date.today()
-    start_date, end_date = date_bounds(period, start, end, post_job_start)
-    return dashboard_payload(db, start_date, end_date)
-
-
-@app.get("/api/net-worth")
-def net_worth(db: Session = Depends(get_db)):
-    payload = current_net_worth(db)
-    payload["history"] = dashboard_payload(db, date(1900, 1, 1), date.today())["net_worth"]
-    return payload
-
-
-@app.get("/api/comparison")
-def comparison(
-    start_a: date, end_a: date, start_b: date, end_b: date,
+@app.post("/api/imports/{token}/replace")
+def replace_import(
+    token: str,
+    payload: ImportCommit,
     db: Session = Depends(get_db),
 ):
-    def txs(start: date, end: date):
-        return list(db.scalars(select(Transaction).where(Transaction.transaction_date >= start, Transaction.transaction_date <= end)))
-    a, b = txs(start_a, end_a), txs(start_b, end_b)
-    totals_a, totals_b = financial_totals(a), financial_totals(b)
-    categories = sorted({tx.category for tx in a + b if tx.classification == Classification.EXPENSE})
-    def spend(rows, category):
-        return sum(abs(tx.amount) for tx in rows if tx.classification == Classification.EXPENSE and tx.category == category and tx.amount < 0)
-    return {
-        "period_a": totals_a, "period_b": totals_b,
-        "categories": [{"category": name, "period_a": round(spend(a, name), 2), "period_b": round(spend(b, name), 2)} for name in categories],
-    }
+    parsed = PREVIEWS.get(token)
+    if not parsed:
+        raise HTTPException(404, "Import preview expired; choose the workbook again")
+    preview = parsed.preview(token)
+    if not preview["can_import"]:
+        raise HTTPException(400, "Resolve workbook errors before importing")
+    if not payload.replace_current_data:
+        raise HTTPException(400, "Spreadsheet imports must replace current monthly data")
 
-
-@app.get("/api/recurring")
-def recurring(db: Session = Depends(get_db)):
-    transactions = list(db.scalars(select(Transaction).where(Transaction.classification == Classification.EXPENSE).order_by(Transaction.transaction_date)))
-    groups: dict[str, list[Transaction]] = {}
-    for tx in transactions:
-        groups.setdefault(tx.normalized_merchant, []).append(tx)
-    results = []
-    for merchant, rows in groups.items():
-        if len(rows) < 2:
-            continue
-        intervals = [(rows[i].transaction_date - rows[i - 1].transaction_date).days for i in range(1, len(rows))]
-        avg_interval = sum(intervals) / len(intervals)
-        frequency = "Monthly" if 25 <= avg_interval <= 35 else "Weekly" if 5 <= avg_interval <= 9 else "Yearly" if 340 <= avg_interval <= 390 else "Irregular"
-        if frequency == "Irregular":
-            continue
-        avg_amount = sum(abs(tx.amount) for tx in rows) / len(rows)
-        next_date = rows[-1].transaction_date.fromordinal(rows[-1].transaction_date.toordinal() + round(avg_interval))
-        results.append({"merchant": merchant, "expected_amount": round(avg_amount, 2), "frequency": frequency, "last_charge": rows[-1].transaction_date, "next_estimated_charge": next_date, "category": rows[-1].category, "active": True})
-    return results
-
-
-@app.get("/api/rules")
-def list_rules(db: Session = Depends(get_db)):
-    return db.scalars(select(Rule).order_by(Rule.priority.desc(), Rule.name)).all()
-
-
-@app.post("/api/rules")
-def create_rule(payload: RuleCreate, db: Session = Depends(get_db)):
-    rule = Rule(**payload.model_dump(), user_created=True)
-    db.add(rule)
-    db.commit()
-    db.refresh(rule)
-    return rule
-
-
-@app.get("/api/categories")
-def categories(db: Session = Depends(get_db)):
-    return db.scalars(select(Category).order_by(Category.kind, Category.name)).all()
-
-
-@app.put("/api/budgets/{month}")
-def upsert_budget(month: str, payload: BudgetUpsert, db: Session = Depends(get_db)):
-    budget = db.scalar(select(Budget).where(Budget.month == month))
-    values = payload.model_dump(exclude={"category_targets", "month"})
-    if budget:
-        for key, value in values.items():
-            setattr(budget, key, value)
-        budget.category_targets_json = json.dumps(payload.category_targets)
+    db.execute(delete(IncomeEntry))
+    db.execute(delete(ExpenseEntry))
+    db.execute(delete(WealthFlowEntry))
+    db.add_all(
+        IncomeEntry(
+            month=row.month,
+            amount=row.amount,
+            description=row.description,
+            income_class=row.income_class,
+        )
+        for row in parsed.income
+    )
+    db.add_all(
+        ExpenseEntry(
+            month=row.month,
+            amount=row.amount,
+            description=row.description,
+            category=row.category,
+            expense_tag=row.expense_tag,
+        )
+        for row in parsed.expenses
+    )
+    db.add_all(
+        WealthFlowEntry(
+            month=row.month,
+            amount=row.amount,
+            destination=row.destination,
+            flow_class=row.flow_class,
+        )
+        for row in parsed.wealth_flows
+    )
+    latest_snapshot = db.scalar(select(func.max(NetWorthSnapshot.snapshot_date)))
+    new_net_worth = [
+        row
+        for row in parsed.net_worth
+        if latest_snapshot is None or row.snapshot_date > latest_snapshot
+    ]
+    db.add_all(
+        NetWorthSnapshot(
+            snapshot_date=row.snapshot_date,
+            account=row.account,
+            account_type=row.account_type,
+            value=row.value,
+        )
+        for row in new_net_worth
+    )
+    state = db.get(WorkbookState, 1)
+    if state:
+        state.workbook_name = parsed.workbook_name
+        state.imported_at = datetime.now(UTC)
     else:
-        budget = Budget(month=month, **values, category_targets_json=json.dumps(payload.category_targets))
-        db.add(budget)
+        db.add(
+            WorkbookState(
+                id=1,
+                workbook_name=parsed.workbook_name,
+                imported_at=datetime.now(UTC),
+            )
+        )
     db.commit()
-    return {"status": "saved", "month": month}
-
-
-@app.get("/api/budgets/{month}")
-def get_budget(month: str, db: Session = Depends(get_db)):
-    budget = db.scalar(select(Budget).where(Budget.month == month))
-    if not budget:
-        return {
-            "month": month, "spending_target": 0, "savings_target": 0,
-            "investment_target": 0, "savings_rate_target": 0, "category_targets": {},
-        }
+    PREVIEWS.pop(token, None)
     return {
-        "month": budget.month, "spending_target": budget.spending_target,
-        "savings_target": budget.savings_target, "investment_target": budget.investment_target,
-        "savings_rate_target": budget.savings_rate_target,
-        "category_targets": json.loads(budget.category_targets_json or "{}"),
+        "status": "imported",
+        "months": parsed.detected_months,
+        "income_entries": len(parsed.income),
+        "expense_entries": len(parsed.expenses),
+        "wealth_flow_entries": len(parsed.wealth_flows),
+        "net_worth_snapshots_added": len(new_net_worth),
     }
-
-
-@app.get("/api/settings")
-def settings(db: Session = Depends(get_db)):
-    return {item.key: item.value for item in db.scalars(select(Setting))}
-
-
-@app.put("/api/settings/{key}")
-def update_setting(key: str, value: str, db: Session = Depends(get_db)):
-    item = db.get(Setting, key)
-    if item:
-        item.value = value
-    else:
-        db.add(Setting(key=key, value=value))
-    db.commit()
-    return {"key": key, "value": value}
-
-
-@app.get("/api/export/transactions.csv")
-def export_transactions(db: Session = Depends(get_db)):
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["date", "account_id", "merchant", "description", "amount", "category", "classification", "notes"])
-    for tx in db.scalars(select(Transaction).order_by(Transaction.transaction_date)):
-        writer.writerow([tx.transaction_date, tx.account_id, tx.normalized_merchant, tx.raw_description, tx.amount, tx.category, tx.classification, tx.notes])
-    return StreamingResponse(iter([output.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=ember-transactions.csv"})
-
-
-@app.get("/api/backup")
-def backup_database():
-    if not DATABASE_PATH.exists():
-        raise HTTPException(404, "Database has not been created yet")
-    return FileResponse(DATABASE_PATH, media_type="application/x-sqlite3", filename="ember-finance-backup.db")
-
-
-@app.post("/api/backup/restore")
-async def restore_database(file: UploadFile = File(...)):
-    if not (file.filename or "").endswith((".db", ".sqlite", ".sqlite3")):
-        raise HTTPException(400, "Choose a SQLite database backup")
-    restore_path = DATABASE_PATH.with_suffix(".restore")
-    with restore_path.open("wb") as destination:
-        shutil.copyfileobj(file.file, destination)
-    with restore_path.open("rb") as source:
-        if source.read(16) != b"SQLite format 3\x00":
-            restore_path.unlink(missing_ok=True)
-            raise HTTPException(400, "This file is not a valid SQLite database")
-    backup_path = DATABASE_PATH.with_suffix(".before-restore.db")
-    engine.dispose()
-    if DATABASE_PATH.exists():
-        shutil.copy2(DATABASE_PATH, backup_path)
-    restore_path.replace(DATABASE_PATH)
-    return {"status": "restored", "safety_backup": str(backup_path)}

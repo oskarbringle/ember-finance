@@ -1,114 +1,157 @@
 export const API_BASE_URL = "http://127.0.0.1:8000/api";
 
 export const CHART_COLORS = [
-  "#183F35",
-  "#D99162",
-  "#E9B85F",
-  "#73998D",
-  "#9A857E",
-  "#7A86A8",
-  "#C98981",
-  "#84937D",
+  "#244b42",
+  "#d48652",
+  "#d9ae55",
+  "#668b80",
+  "#8b6f68",
+  "#6f7699",
+  "#b87670",
+  "#70866b",
+  "#aa8a55",
+  "#5f7f94",
+  "#9474a0",
+  "#89786b",
+  "#9aa19c",
 ] as const;
 
-export type Transaction = {
+export type FinanceFilters = {
+  period: "this_month" | "last_month" | "last_3_months" | "all_time" | "custom";
+  startMonth: string;
+  endMonth: string;
+  includeWork: boolean;
+  includeOneTime: boolean;
+  includeTravel: boolean;
+};
+
+export type Metrics = {
+  month: string;
+  total_income: number;
+  recurring_income: number;
+  total_spending: number;
+  personal_spending: number;
+  core_spending: number;
+  cash_flow_surplus: number;
+  retirement_investing: number;
+  other_investing: number;
+  internal_transfers: number;
+  monthly_wealth_added: number;
+  wealth_building_rate: number;
+};
+
+export type ExpenseEntry = {
   id: number;
-  account_id: number;
-  transaction_date: string;
-  normalized_merchant: string;
-  raw_description: string;
+  month: string;
   amount: number;
+  description: string;
   category: string;
-  classification: string;
-  confidence: number;
-  manually_reviewed: boolean;
+  expense_tag: string;
 };
 
-export type Account = {
+export type IncomeEntry = {
   id: number;
-  name: string;
-  type: string;
-  institution: string;
-  last_four: string | null;
-  current_balance: number;
-  balance_mode: string;
-  active: boolean;
-};
-
-export type ImportPreviewRow = {
-  transaction_date: string;
-  normalized_merchant: string;
+  month: string;
   amount: number;
-  category: string;
-  classification: string;
+  description: string;
+  income_class: string;
 };
 
-export type PdfParseReport = {
-  provider: string;
-  confidence: "high" | "review";
-  transactions_found: number;
-  searchable_pages: number;
-  method: string;
-  inflows: number;
-  outflows: number;
-  net: number;
-  warnings: string[];
+export type WealthFlowEntry = {
+  id: number;
+  month: string;
+  amount: number;
+  destination: string;
+  flow_class: string;
+};
+
+export type FinanceData = {
+  metadata: {
+    workbook_name: string | null;
+    imported_at: string | null;
+    available_months: string[];
+    selected_months: string[];
+  };
+  metrics: Metrics;
+  average_core_spending: number;
+  monthly: Metrics[];
+  categories: {
+    category: string;
+    value: number;
+    percentage: number;
+    count: number;
+  }[];
+  category_trends: Record<string, number | string>[];
+  expenses: ExpenseEntry[];
+  all_expenses: ExpenseEntry[];
+  income: IncomeEntry[];
+  wealth_flows: WealthFlowEntry[];
+  net_worth: Record<string, number | string>[];
+  net_worth_accounts: {
+    account: string;
+    account_type: string;
+    value: number;
+    group: string;
+  }[];
+  net_worth_composition: { group: string; value: number }[];
+  current_net_worth: number;
+  insights: string[];
 };
 
 export type ImportPreview = {
-  batch_id: string;
-  account: string;
-  total_rows: number;
-  ready_to_import: number;
-  committed?: number;
-  duplicates: number;
-  cross_account_duplicates?: number;
-  uncertain: number;
-  preview: ImportPreviewRow[];
-  parse_report?: PdfParseReport;
-  committedDone?: boolean;
+  token: string;
+  workbook_name: string;
+  detected_months: string[];
+  income_entries: number;
+  expense_entries: number;
+  wealth_flow_entries: number;
+  net_worth_entries: number;
+  net_worth_dates: string[];
+  issues: {
+    sheet: string;
+    row: number | null;
+    message: string;
+    severity: "error" | "warning";
+  }[];
+  can_import: boolean;
 };
 
-export type Dashboard = {
-  range: { start: string; end: string };
-  totals: {
-    income: number;
-    spending: number;
-    saved: number;
-    invested: number;
-    surplus: number;
-    savings_rate: number;
-    budget_target: number;
-    budget_remaining: number;
-    investable_surplus: number;
-  };
-  categories: { name: string; value: number }[];
-  monthly: Record<string, number | string>[];
-  net_worth: { date: string; value: number }[];
-  budget_categories: { category: string; spent: number; target: number }[];
-  recent_transactions: Transaction[];
-  review_count: number;
+export const EMPTY_METRICS: Metrics = {
+  month: "",
+  total_income: 0,
+  recurring_income: 0,
+  total_spending: 0,
+  personal_spending: 0,
+  core_spending: 0,
+  cash_flow_surplus: 0,
+  retirement_investing: 0,
+  other_investing: 0,
+  internal_transfers: 0,
+  monthly_wealth_added: 0,
+  wealth_building_rate: 0,
 };
 
-export const EMPTY_DASHBOARD: Dashboard = {
-  range: { start: "", end: "" },
-  totals: {
-    income: 0,
-    spending: 0,
-    saved: 0,
-    invested: 0,
-    surplus: 0,
-    savings_rate: 0,
-    budget_target: 0,
-    budget_remaining: 0,
-    investable_surplus: 0,
+export const EMPTY_DATA: FinanceData = {
+  metadata: {
+    workbook_name: null,
+    imported_at: null,
+    available_months: [],
+    selected_months: [],
   },
-  categories: [],
+  metrics: EMPTY_METRICS,
+  average_core_spending: 0,
   monthly: [],
+  categories: [],
+  category_trends: [],
+  expenses: [],
+  all_expenses: [],
+  income: [],
+  wealth_flows: [],
   net_worth: [],
-  budget_categories: [],
-  recent_transactions: [],
-  review_count: 0,
+  net_worth_accounts: [],
+  net_worth_composition: [],
+  current_net_worth: 0,
+  insights: [],
 };
 
 export function formatCurrency(value: number, compact = false) {
@@ -119,32 +162,27 @@ export function formatCurrency(value: number, compact = false) {
   }).format(value);
 }
 
-export function currentMonthLabel() {
+export function monthLabel(month: string, short = false) {
+  if (!month) return "—";
+  const [year, monthNumber] = month.split("-").map(Number);
   return new Intl.DateTimeFormat("en-US", {
-    month: "long",
-    year: "numeric",
-  }).format(new Date());
+    month: short ? "short" : "long",
+    year: short ? undefined : "numeric",
+  }).format(new Date(year, monthNumber - 1, 1));
 }
 
-export async function fetchFinanceData(period: string) {
-  const [dashboardResponse, transactionsResponse, accountsResponse] =
-    await Promise.all([
-      fetch(`${API_BASE_URL}/dashboard?period=${period}`),
-      fetch(`${API_BASE_URL}/transactions?limit=2000`),
-      fetch(`${API_BASE_URL}/accounts`),
-    ]);
-
-  if (
-    !dashboardResponse.ok ||
-    !transactionsResponse.ok ||
-    !accountsResponse.ok
-  ) {
-    throw new Error("Could not load local finance data");
+export async function fetchFinanceData(filters: FinanceFilters) {
+  const query = new URLSearchParams({
+    period: filters.period,
+    include_work_reimbursable: String(filters.includeWork),
+    include_one_time: String(filters.includeOneTime),
+    include_personal_travel: String(filters.includeTravel),
+  });
+  if (filters.period === "custom") {
+    query.set("start_month", filters.startMonth);
+    query.set("end_month", filters.endMonth);
   }
-
-  return {
-    dashboard: (await dashboardResponse.json()) as Dashboard,
-    transactions: (await transactionsResponse.json()) as Transaction[],
-    accounts: (await accountsResponse.json()) as Account[],
-  };
+  const response = await fetch(`${API_BASE_URL}/dashboard?${query}`);
+  if (!response.ok) throw new Error("Could not load local finance data");
+  return (await response.json()) as FinanceData;
 }

@@ -11,41 +11,24 @@ async function render() {
   );
 }
 
-test("server-renders Ember's local-first application shell", async () => {
+test("server-renders Ember's spreadsheet analytics shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
-
   const html = await response.text();
   assert.match(html, /<title>Ember — Personal Finance<\/title>/i);
   assert.match(html, /Private by design/);
   assert.match(html, /Stored on this Mac/);
-  assert.match(html, /API offline · run the local start script/);
-  assert.doesNotMatch(html, />OB</);
+  assert.match(html, /Loading dashboard/);
 });
 
-test("source starts from zero and does not contain a demo dashboard fallback", async () => {
-  const [page, finance] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/lib/finance.ts", import.meta.url), "utf8"),
-  ]);
-  assert.match(finance, /export const EMPTY_DASHBOARD/);
-  assert.match(page, /useState<Dashboard>\(EMPTY_DASHBOARD\)/);
-  assert.match(
-    page,
-    /\[accounts, setAccounts\] = useState<Account\[\]>\(\[\]\)/,
+test("source uses the workbook-first navigation and no statement workflow", async () => {
+  const page = await readFile(
+    new URL("../app/page.tsx", import.meta.url),
+    "utf8",
   );
-  assert.match(
-    page,
-    /\[transactions, setTransactions\] = useState<Transaction\[\]>\(\[\]\)/,
-  );
-  assert.match(page, /Start with a clean slate/);
-  assert.match(page, /const \[page, setPage\] = useState\("Home"\)/);
-  assert.match(page, /\["Home", House\]/);
-  assert.match(page, /className="account-edit-button"/);
-  assert.doesNotMatch(
-    page,
-    /fallbackDashboard|fallbackAccounts|fallbackTransactions/,
-  );
-  assert.doesNotMatch(page, /Preview data · start API to edit/);
+  assert.match(page, /"Overview"/);
+  assert.match(page, /"Spending"/);
+  assert.match(page, /"Net Worth"/);
+  assert.match(page, /Import \/ Replace Data/);
+  assert.doesNotMatch(page, /ReviewPage|TransactionDrawer|PDF statement/);
 });

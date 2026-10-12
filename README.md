@@ -1,27 +1,24 @@
 # Ember Finance
 
-Ember is a polished, local-first personal finance dashboard. It begins with an empty database, imports statement PDFs or CSVs on your own computer, and makes every dashboard number traceable to the transactions behind it.
+Ember is a local personal-finance analytics dashboard powered by your budgeting spreadsheet. The spreadsheet remains where you enter and organize data; Ember turns it into clear spending, income, investing, comparison, and net-worth views.
 
-There is no login, telemetry, bank credential, cloud database, or automatic upload. The source repository contains only code and clearly invented test fixtures.
+There is no login, telemetry, bank connection, cloud database, or automatic upload. The repository contains only source code and invented test fixtures. Imported workbook data stays in an ignored SQLite database on your computer.
 
-## What works
+## Workbook structure
 
-- Clean first-run onboarding with no demo accounts, balances, transactions, or budgets
-- Guided Home setup and editable account details, balances, and active status
-- Chase checking, savings, and credit-card PDF import, including on-device OCR for image-based deposit tables
-- Broad generic PDF support for numeric, ISO, and month-name dates; debit/credit suffixes; extracted tables; and wrapped rows
-- CSV import for date/description/amount or debit/credit layouts
-- Preview-before-commit, sign checks, confidence reporting, and deterministic duplicate detection
-- Expense, income, saving, investment, transfer, card-payment, refund, and reimbursement accounting
-- Review inbox for ambiguous transactions and optional user-created rules
-- Dashboard, transaction ledger, spending detail, comparisons, monthly report, FIRE metrics, recurring costs, and net worth
-- Local SQLite backup/restore and transaction CSV export
+Use one monthly tab per month. Full month names, abbreviations, and optional years are supported, such as `August`, `Sep`, or `October 2026`. Row counts can vary and future month tabs are detected automatically.
 
-## Start on your Mac
+Each monthly tab can contain these tables:
 
-Requirements: macOS, Python 3.11+, Node.js 22.13+, and Apple Command Line Tools (`xcode-select --install`) for the private OCR fallback.
+- Income: `Amount`, `Description / Type`, `Income Class`
+- Expenses: `Amount`, `Description / Type`, `Category`, optional `Expense Tag`
+- Wealth Flow: `Amount`, `Destination`, `Flow Class`
 
-First, open Terminal and move into the downloaded project folder. Running the command from `~` will produce “No such file or directory.”
+The `Networth` tab uses `Account`, `Account Type`, and `Value`, plus either a `Date` column or a `Snapshot Date` field above the table. Re-importing replaces monthly records; a net-worth snapshot is appended only when its date is newer than the latest saved snapshot.
+
+## Start locally
+
+Requirements: macOS, Python 3.11+, and Node.js 22.13+.
 
 ```bash
 cd /path/to/ember-finance
@@ -29,55 +26,35 @@ chmod +x scripts/*.sh
 ./scripts/start-local.sh
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The API reference is at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
+Open [http://localhost:3000](http://localhost:3000). Press `Control-C` to stop both services.
 
-The start script creates an isolated Python environment, installs missing dependencies, installs JavaScript dependencies, and starts both services. Press `Control-C` once to stop both.
+On first use, open **Import**, select your `.xlsx` workbook, review every detected month and warning, then choose **Import / Replace Data**.
 
-## Your first statement
+## Financial definitions
 
-1. Start on **Home**, then open **Settings** and create the account that owns the statement. Use a nickname and, optionally, only the final four digits.
-2. Open **Import**, select that account, and choose the PDF or CSV.
-3. Inspect the parser name, warnings, dates, merchants, classifications, and signed amounts in the preview.
-4. Commit only when the extracted rows match the statement.
-5. Open **Review** and resolve uncertain person-to-person payments or unfamiliar descriptions.
+- Recurring Earned Income: Paycheck + Side Income
+- Personal Spending: all expenses excluding `Work/Reimbursable`
+- Core Spending: personal spending excluding `One-time` and `Personal Travel`
+- Monthly Wealth Added: recurring earned income − personal spending + retirement investment + other investment
+- Wealth-Building Rate: Monthly Wealth Added ÷ (Recurring Earned Income + Retirement Investment)
 
-PDF extraction is deterministic and entirely local. Chase card statements use their embedded transaction text. When a Chase deposit statement renders its transaction table as images, Ember invokes Apple Vision on your Mac, checks transaction amounts against running balances, and reports whether each statement period reconciles. The first OCR import may take a minute while a small local helper is compiled. Other searchable layouts use table and flexible text-row extraction and are marked for review. A bank can change its layout, so always reconcile row count and totals against the original statement before relying on the dashboard.
+Internal transfers never count as spending, income, investing, or newly created wealth. These formulas live in `backend/app/analytics.py`.
 
-If a searchable statement layout is not recognized, use the bank’s CSV export when available or contribute a fully redacted fixture and parser test. Never commit a real statement.
+## Privacy and sharing
 
-## Share it safely
-
-Friends can clone the repository and run the same three commands. Each clone creates its own ignored database under `backend/data/`; no user data is inherited from the repository.
-
-Before every GitHub push or release:
+Before publishing changes, run:
 
 ```bash
 ./scripts/privacy-check.sh
 ```
 
-The check rejects tracked databases, statements, backup folders, secret files, absolute home-directory paths, and long account-number-like values. `.gitignore` also excludes PDFs, financial interchange files, CSV exports outside `sample-data/`, and local data folders.
+The check rejects tracked databases, statements, secrets, home paths, and account-number-like values. Friends can clone the public repository and receive a clean database with none of your imported data.
 
-To build a source-only zip from the current commit:
-
-```bash
-./scripts/package-release.sh 0.1.0
-```
-
-## Reset everything
-
-Stop Ember first, then run:
+To permanently clear local imported data:
 
 ```bash
 ./scripts/reset-local-data.sh
 ```
-
-The script requires typing `RESET`. It permanently deletes the local database; the next launch creates a fresh one containing only generic category names.
-
-## Accounting model
-
-Spending includes `EXPENSE` outflows and subtracts `REFUND` and `REIMBURSEMENT` inflows. Credit-card payments and internal transfers are excluded to prevent double counting. Savings rate is `(SAVING + INVESTMENT) / earned INCOME`. Ambiguous imports remain `UNKNOWN` until reviewed.
-
-The definitions live in `backend/app/analytics.py`; statement extraction lives in `backend/app/parsers/`.
 
 ## Development
 
@@ -86,7 +63,8 @@ python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 npm install
 .venv/bin/pytest backend/tests -q
+npm run lint
 npm run build
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Ember is MIT licensed and provided without financial or accuracy warranties.
+Ember is MIT licensed and provided without financial or accuracy warranties.

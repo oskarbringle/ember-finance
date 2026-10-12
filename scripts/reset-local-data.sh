@@ -5,7 +5,7 @@ project_dir="$(cd "$(dirname "$0")/.." && pwd)"
 database="$project_dir/backend/data/ember_finance.db"
 
 if [[ "${1:-}" != "--yes" ]]; then
-  echo "This permanently removes Ember's local accounts, imports, rules, budgets, and transactions."
+  echo "This permanently removes Ember's imported spreadsheet data and net-worth history."
   read -r -p "Type RESET to continue: " answer
   [[ "$answer" == "RESET" ]] || { echo "Cancelled."; exit 1; }
 fi
